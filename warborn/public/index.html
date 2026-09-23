@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Warborn</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  :root {
+    /* Safe-area insets for notched phones (viewport-fit=cover). */
+    --sat: env(safe-area-inset-top, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+    --hud-h: 52px;
+  }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    font-family: 'Segoe UI', system-ui, sans-serif; background: #0b1220; color: #e6edf3;
+    /* Prevent browser gesture scrolling/zoom fighting with canvas controls. */
+    touch-action: none; overscroll-behavior: none;
+  }
+  #canvas-wrap { position: absolute; inset: 0; touch-action: none; }
+  canvas { display: block; touch-action: none; }
+
+  /* UI overlay lives in HTML/CSS on top of the canvas, not in 3D space. */
+  #ui { position: absolute; inset: 0; pointer-events: none; }
+  .panel { pointer-events: auto; }
+
+  .center-screen {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(6,10,20,0.85); padding: 16px;
+  }
+  .card {
+    background: #131c2e; border: 1px solid #2a3852; border-radius: 12px;
+    padding: clamp(20px, 5vw, 32px); width: 380px; max-width: 92vw;
+    max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  .card h1 { font-size: clamp(24px, 7vw, 30px); letter-spacing: 3px; margin-bottom: 4px; color: #7fd1ff; }
+  .card h2 { font-size: clamp(15px, 4vw, 18px); margin-bottom: 16px; font-weight: 500; color: #9fb2cc; }
+  .card p { color: #9fb2cc; font-size: clamp(13px, 3.6vw, 14px); margin-bottom: 14px; line-height: 1.4; }
+  input[type=text] {
+    width: 100%; padding: 14px 12px; border-radius: 8px; border: 1px solid #33465f; min-height: 48px;
+    background: #0d1524; color: #e6edf3; font-size: 16px; letter-spacing: 2px; text-transform: uppercase;
+  }
+  button {
+    cursor: pointer; border: none; border-radius: 8px; padding: 12px 16px;
+    font-size: clamp(13px, 3.6vw, 15px); font-weight: 600; background: #2563eb; color: white;
+    transition: background .15s; min-height: 48px; touch-action: manipulation;
+  }
+  button:hover { background: #1d4ed8; }
+  button.secondary { background: #2a3852; }
+  button.secondary:hover { background: #35496a; }
+  button.danger { background: #b91c1c; }
+  button:disabled { background: #33465f; cursor: not-allowed; opacity: .6; }
+  .row { display: flex; gap: 10px; margin-top: 12px; }
+  .row > * { flex: 1; }
+
+  /* Top HUD bar */
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: calc(8px + var(--sat)) calc(12px + var(--sar)) 8px calc(12px + var(--sal));
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: linear-gradient(#0b1220ee, #0b122000); min-height: var(--hud-h);
+  }
+  #hud .tag { font-size: clamp(11px, 3vw, 13px); color: #7fd1ff; letter-spacing: 2px; font-weight: 700; }
+  #hud .spacer { flex: 1; }
+  #timer { font-size: clamp(18px, 5vw, 22px); font-weight: 700; font-variant-numeric: tabular-nums; }
+  #timer.low { color: #ff6b6b; }
+  #round { color: #9fb2cc; font-size: clamp(12px, 3.4vw, 14px); }
+
+  /* Deployment tray — side panel on desktop/tablet. */
+  #tray {
+    position: absolute; right: 0; top: var(--hud-h); bottom: 0;
+    width: clamp(200px, 24vw, 260px); display: flex; flex-direction: column;
+    background: #0f1728f2; border-left: 1px solid #2a3852;
+    padding: 14px calc(14px + var(--sar)) calc(14px + var(--sab)) 14px; overflow-y: auto;
+  }
+  #tray h3 { font-size: 13px; color: #9fb2cc; margin-bottom: 10px; letter-spacing: 1px; }
+  #traylist { display: flex; flex-direction: column; }
+  .tank-item {
+    display: flex; align-items: center; gap: 8px; padding: 10px; margin-bottom: 6px; min-height: 44px;
+    background: #16233a; border: 1px solid #2a3852; border-radius: 8px; cursor: pointer;
+    font-size: clamp(12px, 3.4vw, 14px); touch-action: manipulation;
+  }
+  .tank-item.placed { opacity: .45; }
+  .tank-item.selected { border-color: #7fd1ff; background: #1c2f4d; }
+  .swatch { width: 18px; height: 18px; border-radius: 3px; background: #4ade80; flex: none; }
+  .tray-note { font-size: 12px; color: #7f8ea8; margin-top: 10px; }
+
+  /* Bottom action bar */
+  #actionbar {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    padding: 12px calc(12px + var(--sar)) calc(12px + var(--sab)) calc(12px + var(--sal));
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: linear-gradient(#0b122000, #0b1220ee);
+  }
+  #hint { color: #9fb2cc; font-size: clamp(12px, 3.4vw, 14px); flex: 1 1 100%; min-width: 0; }
+  #actionbar button { flex: 1 1 auto; }
+  .badge { font-size: clamp(11px, 3vw, 12px); padding: 4px 10px; border-radius: 20px; background: #16233a; border: 1px solid #2a3852; }
+
+  .hidden { display: none !important; }
+
+  #toast {
+    position: absolute; top: calc(var(--hud-h) + var(--sat) + 6px); left: 50%; transform: translateX(-50%);
+    background: #b91c1c; color: white; padding: 10px 18px; border-radius: 8px;
+    font-size: clamp(13px, 3.6vw, 15px); max-width: 90vw; text-align: center;
+    opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 50;
+  }
+  #toast.show { opacity: 1; }
+
+  .maplist { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+  .maplist button { text-align: left; background: #16233a; }
+  .maplist button.sel { background: #1d4ed8; }
+
+  /* Floating zoom controls for the canvas (pinch-zoom alternative on touch). */
+  #zoomctl {
+    position: absolute; left: calc(10px + var(--sal)); bottom: calc(80px + var(--sab));
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #zoomctl button { width: 48px; height: 48px; padding: 0; font-size: 22px; border-radius: 24px; background: #16233aee; }
+
+  /* ---- Mobile / narrow portrait: tray becomes a bottom drawer ---- */
+  @media (max-width: 640px), (max-height: 480px) {
+    #tray {
+      top: auto; left: 0; right: 0; bottom: 0; width: auto;
+      max-height: 46vh; border-left: none; border-top: 1px solid #2a3852;
+      padding: 10px calc(10px + var(--sar)) calc(10px + var(--sab)) calc(10px + var(--sal));
+    }
+    /* Tank items flow horizontally in a scrollable strip. */
+    #traylist {
+      flex-direction: row; flex-wrap: nowrap; overflow-x: auto; gap: 8px;
+      -webkit-overflow-scrolling: touch; padding-bottom: 4px;
+    }
+    .tank-item { flex: 0 0 auto; margin-bottom: 0; min-width: 120px; }
+    .tray-note { display: none; }
+    #zoomctl { bottom: calc(52vh); }
+  }
+</style>
+</head>
+<body>
+  <div id="canvas-wrap"></div>
+
+  <div id="ui">
+    <!-- Top HUD -->
+    <div id="hud" class="panel hidden">
+      <span class="tag">WARBORN</span>
+      <span id="roomtag" class="badge"></span>
+      <span id="slottag" class="badge"></span>
+      <span class="spacer"></span>
+      <span id="round" class="hidden"></span>
+      <span id="timer" class="hidden">30</span>
+    </div>
+
+    <!-- Lobby -->
+    <div id="lobby" class="center-screen">
+      <div class="card">
+        <h1>WARBORN</h1>
+        <h2>Phase 1 — Core Multiplayer</h2>
+        <p>Create a room and share the code, or join an existing room.</p>
+        <input id="roomInput" type="text" placeholder="ROOM CODE" maxlength="4" />
+        <div class="row">
+          <button id="createBtn">Create Room</button>
+          <button id="joinBtn" class="secondary">Join Room</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Map select (Player A) / waiting (Player B) -->
+    <div id="mapscreen" class="center-screen hidden">
+      <div class="card">
+        <h1>SELECT MAP</h1>
+        <div id="mapWaiting" class="hidden"><p>Waiting for Player A to choose the map...</p></div>
+        <div id="mapChoose">
+          <p>Player A picks the battlefield (authoritative for Phase 1).</p>
+          <div id="maplist" class="maplist"></div>
+          <button id="confirmMapBtn" disabled>Confirm Map</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Deployment tray -->
+    <div id="tray" class="panel hidden">
+      <h3>DEPLOY YOUR FLEET</h3>
+      <div id="traylist"></div>
+      <p class="tray-note">Tap a tank, then tap a tile in your zone to place. Use Rotate to turn it.</p>
+      <div class="row" style="margin-top:8px;">
+        <button id="rotateBtn" class="secondary">Rotate</button>
+        <button id="readyBtn" disabled>Ready</button>
+      </div>
+    </div>
+
+    <!-- Bottom action bar -->
+    <div id="actionbar" class="panel hidden">
+      <span id="hint"></span>
+      <button id="fireBtn" class="hidden">Fire</button>
+      <button id="repoBtn" class="secondary hidden">Reposition</button>
+      <button id="rotateActionBtn" class="secondary hidden">Rotate</button>
+      <button id="confirmBtn" class="hidden">Confirm</button>
+      <button id="cancelActionBtn" class="secondary hidden">Cancel</button>
+    </div>
+
+    <!-- Canvas zoom controls (pinch-zoom alternative for touch) -->
+    <div id="zoomctl" class="panel hidden">
+      <button id="zoomInBtn" aria-label="Zoom in">+</button>
+      <button id="zoomOutBtn" aria-label="Zoom out">&minus;</button>
+    </div>
+
+    <!-- Overlays -->
+    <div id="waitOverlay" class="center-screen hidden">
+      <div class="card"><h2 id="waitMsg">Waiting...</h2></div>
+    </div>
+
+    <div id="overScreen" class="center-screen hidden">
+      <div class="card">
+        <h1 id="overTitle">VICTORY</h1>
+        <p id="overMsg"></p>
+        <button id="againBtn" style="width:100%;">Play Again</button>
+      </div>
+    </div>
+
+    <div id="toast"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+  // ===========================================================================
+  // Warborn client — single-file. All game UI, state, rendering, and network.
+  // The client NEVER decides hits; it renders only what the server confirms.
+  // ===========================================================================
+  "use strict";
+
+  // ---- Global client state -------------------------------------------------
+  const G = {
+    ws: null,
+    playerId: null,
+    roomCode: null,
+    slot: null,           // "A" or "B"
+    maps: [],
+    roster: [],
+    turnTimeMs: 30000,
+    view: null,           // latest fog-of-war view from server
+    selectedMapId: null,
+
+    // Deployment UI
+    selectedTankId: null, // tank picked from tray to place
+    placeRotation: 0,     // 0 horizontal, 1 vertical (while placing)
+
+    // Battle UI
+    mode: null,           // null | "fire" | "reposition"
+    repoTankId: null,     // tank chosen to reposition
+    repoRotation: 0,
+    repoDest: null,       // {x,y} chosen reposition destination (pending confirm)
+    fireTarget: null,     // {x,y} chosen fire tile (pending tap-then-confirm)
+
+    // timer
+    timerInterval: null,
+    turnDeadline: 0,
+  };
+
+  const GRID_W = 30, GRID_H = 30; // must match server maps.js
+  const TILE = 1;                 // world units per tile
+
+  // ---- DOM helpers ---------------------------------------------------------
+  const $ = (id) => document.getElementById(id);
+  function show(el) { $(el).classList.remove("hidden"); }
+  function hide(el) { $(el).classList.add("hidden"); }
+
+  let toastTimer = null;
+  function toast(msg) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+  }
+
+  // ---- WebSocket -----------------------------------------------------------
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    G.ws = new WebSocket(`${proto}://${location.host}`);
+    G.ws.onopen = () => {
+      // Attempt reconnect if we have stored session info.
+      const saved = loadSession();
+      if (saved && saved.roomCode && saved.playerId) {
+        sendMsg({ type: "reconnect", roomCode: saved.roomCode, playerId: saved.playerId });
+      }
+    };
+    G.ws.onmessage = (ev) => handleServerMsg(JSON.parse(ev.data));
+    G.ws.onclose = () => toast("Disconnected from server");
+  }
+
+  function sendMsg(obj) {
+    if (G.ws && G.ws.readyState === WebSocket.OPEN) {
+      G.ws.send(JSON.stringify(obj));
+    }
+  }
+
+  function saveSession() {
+    try {
+      sessionStorage.setItem("warborn", JSON.stringify({ roomCode: G.roomCode, playerId: G.playerId }));
+    } catch {}
+  }
+  function loadSession() {
+    try { return JSON.parse(sessionStorage.getItem("warborn")); } catch { return null; }
+  }
+  function clearSession() {
+    try { sessionStorage.removeItem("warborn"); } catch {}
+  }
+
+  // ---- Server message router -----------------------------------------------
+  function handleServerMsg(msg) {
+    switch (msg.type) {
+      case "joined":
+        G.playerId = msg.playerId;
+        G.roomCode = msg.roomCode;
+        G.slot = msg.slot;
+        G.maps = msg.maps;
+        G.roster = msg.roster;
+        G.turnTimeMs = msg.turnTimeMs;
+        saveSession();
+        onJoined(msg.reconnected);
+        break;
+      case "state":
+        G.view = msg.view;
+        renderFromView();
+        break;
+      case "round_result":
+        G.view = msg.view;
+        applyRoundResult(msg.result);
+        renderFromView();
+        break;
+      case "game_over":
+        onGameOver(msg);
+        break;
+      case "opponent_presence":
+        onOpponentPresence(msg.connected);
+        break;
+      case "error":
+        toast(msg.error);
+        break;
+    }
+  }
+
+  // ---- Lobby / flow wiring --------------------------------------------------
+  $("createBtn").onclick = () => sendMsg({ type: "create_room" });
+  $("joinBtn").onclick = () => {
+    const code = $("roomInput").value.trim().toUpperCase();
+    if (code.length < 3) return toast("Enter a room code");
+    sendMsg({ type: "join_room", roomCode: code });
+  };
+
+  function onJoined(reconnected) {
+    hide("lobby");
+    show("hud");
+    $("roomtag").textContent = "ROOM " + G.roomCode;
+    $("slottag").textContent = "PLAYER " + G.slot;
+    if (reconnected) toast("Reconnected");
+    // Phase gets driven by the state message that follows.
+  }
+
+  // Map select
+  function buildMapList() {
+    const wrap = $("maplist");
+    wrap.innerHTML = "";
+    G.maps.forEach((m) => {
+      const b = document.createElement("button");
+      b.textContent = m.name;
+      b.onclick = () => {
+        G.selectedMapId = m.id;
+        [...wrap.children].forEach((c) => c.classList.remove("sel"));
+        b.classList.add("sel");
+        $("confirmMapBtn").disabled = false;
+      };
+      wrap.appendChild(b);
+    });
+  }
+  $("confirmMapBtn").onclick = () => {
+    if (!G.selectedMapId) return;
+    sendMsg({ type: "select_map", mapId: G.selectedMapId });
+  };
+
+  // Ready
+  $("readyBtn").onclick = () => sendMsg({ type: "ready" });
+
+  // Play again
+  $("againBtn").onclick = () => {
+    hide("overScreen");
+    sendMsg({ type: "play_again" });
+  };
+
+  // ---- Phase-driven UI render ----------------------------------------------
+  let lastPhase = null;
+  function renderFromView() {
+    const v = G.view;
+    if (!v) return;
+
+    // Show/hide screens by phase.
+    if (v.phase === "lobby") {
+      // fresh match (e.g. after play again) — go to map select
+      hide("tray"); hide("actionbar"); hide("overScreen"); hide("waitOverlay"); hide("zoomctl");
+      show("mapscreen");
+      setupMapScreen();
+      stopTimer();
+    } else if (v.phase === "deploy") {
+      hide("mapscreen"); hide("overScreen");
+      show("tray"); hide("actionbar"); show("zoomctl");
+      buildTray();
+      updateReadyState();
+      buildScene(); // (re)build board for deploy
+      stopTimer();
+      if (v.myReady && !v.oppReady) {
+        showWait("Waiting for opponent to finish deploying...");
+      } else {
+        hideWait();
+      }
+    } else if (v.phase === "battle") {
+      hide("mapscreen"); hide("tray"); hide("overScreen");
+      show("actionbar"); show("zoomctl");
+      buildScene();
+      updateBattleBar();
+      manageTimer();
+      if (v.submitted && !v.oppSubmitted) {
+        showWait("Action locked in. Waiting for opponent...");
+      } else {
+        hideWait();
+      }
+    } else if (v.phase === "over") {
+      // game_over message handles the screen
+      stopTimer();
+      hide("zoomctl");
+    }
+
+    updateHud();
+    lastPhase = v.phase;
+    if (typeof render3D === "function") render3D();
+  }
+
+  function setupMapScreen() {
+    if (G.slot === "A") {
+      show("mapChoose"); hide("mapWaiting");
+      buildMapList();
+    } else {
+      hide("mapChoose"); show("mapWaiting");
+    }
+  }
+
+  function updateHud() {
+    const v = G.view;
+    if (v.phase === "battle") {
+      show("round"); $("round").textContent = "ROUND " + v.round;
+    } else {
+      hide("round");
+    }
+  }
+
+  function showWait(msg) { $("waitMsg").textContent = msg; show("waitOverlay"); }
+  function hideWait() { hide("waitOverlay"); }
+
+  const TANK_COLORS = {
+    command: "#f59e0b",
+    heavy: "#ef4444",
+    medium: "#3b82f6",
+    light: "#22c55e",
+  };
+
+  // ---- Deployment tray ------------------------------------------------------
+  function buildTray() {
+    const list = $("traylist");
+    list.innerHTML = "";
+    G.view.myTanks.forEach((t) => {
+      const placed = t.tiles && t.tiles.length > 0;
+      const item = document.createElement("div");
+      item.className = "tank-item" + (placed ? " placed" : "") +
+        (G.selectedTankId === t.tankId ? " selected" : "");
+      const sw = document.createElement("div");
+      sw.className = "swatch";
+      sw.style.background = TANK_COLORS[t.type] || "#4ade80";
+      const lbl = document.createElement("span");
+      const [w, h] = t.footprint;
+      lbl.textContent = `${t.label} (${w}x${h})`;
+      item.appendChild(sw); item.appendChild(lbl);
+      if (!placed) {
+        // Use pointerup for a unified mouse/touch/stylus tap.
+        item.addEventListener("pointerup", () => {
+          G.selectedTankId = t.tankId;
+          G.placeRotation = 0;
+          buildTray();
+          toast("Placing " + t.label + " — tap your zone, use Rotate to turn");
+        });
+      }
+      list.appendChild(item);
+    });
+  }
+
+  function updateReadyState() {
+    const allPlaced = G.view.myTanks.every((t) => t.tiles && t.tiles.length > 0);
+    $("readyBtn").disabled = !allPlaced || G.view.myReady;
+    $("readyBtn").textContent = G.view.myReady ? "Waiting..." : "Ready";
+    // Rotate button only meaningful while a tank is selected for placement.
+    $("rotateBtn").disabled = !G.selectedTankId;
+  }
+
+  // Unified rotate action — used by keyboard (R) AND the touch Rotate buttons.
+  function doRotate() {
+    if (!G.view) return;
+    if (G.view.phase === "deploy" && G.selectedTankId) {
+      G.placeRotation = G.placeRotation ? 0 : 1;
+      toast("Rotation: " + (G.placeRotation ? "vertical" : "horizontal"));
+      updateGhost();
+    } else if (G.view.phase === "battle" && G.mode === "reposition" && G.repoTankId) {
+      G.repoRotation = G.repoRotation ? 0 : 1;
+      toast("Rotation: " + (G.repoRotation ? "vertical" : "horizontal"));
+      // Re-preview at the pending destination if one is chosen.
+      if (G.repoDest) previewRepo(G.repoDest);
+      else updateGhost();
+    }
+  }
+  // Keyboard shortcut (desktop convenience).
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "r" || e.key === "R") doRotate();
+  });
+  // Touch/click Rotate buttons.
+  $("rotateBtn").addEventListener("pointerup", doRotate);
+  $("rotateActionBtn").addEventListener("pointerup", doRotate);
+
+  // ---- Battle action bar ----------------------------------------------------
+  // Flow (touch-safe): pick Fire or Reposition -> tap a tile to SELECT it (shown
+  // as a ghost, not fired) -> tap Confirm to submit. Prevents accidental misfires.
+  $("fireBtn").addEventListener("pointerup", () => {
+    G.mode = "fire";
+    G.repoTankId = null; G.repoDest = null; G.fireTarget = null;
+    clearGhost();
+    updateBattleBar();
+    toast("Tap an enemy tile to aim, then Confirm.");
+  });
+  $("repoBtn").addEventListener("pointerup", () => {
+    G.mode = "reposition";
+    G.repoTankId = null; G.repoDest = null; G.fireTarget = null;
+    clearGhost();
+    updateBattleBar();
+    toast("Tap one of YOUR tanks, then a destination, then Confirm.");
+  });
+  $("cancelActionBtn").addEventListener("pointerup", () => {
+    resetActionSelection();
+    updateBattleBar();
+  });
+  $("confirmBtn").addEventListener("pointerup", submitSelectedAction);
+
+  function resetActionSelection() {
+    G.mode = null; G.repoTankId = null; G.repoDest = null; G.fireTarget = null;
+    clearGhost();
+  }
+
+  // Submit whatever the player has staged (fire target or reposition dest).
+  function submitSelectedAction() {
+    if (G.mode === "fire" && G.fireTarget) {
+      sendMsg({ type: "submit_action", action: "fire", target: G.fireTarget });
+    } else if (G.mode === "reposition" && G.repoTankId && G.repoDest) {
+      sendMsg({
+        type: "submit_action", action: "reposition",
+        tankId: G.repoTankId, position: G.repoDest, rotation: G.repoRotation,
+      });
+    } else {
+      toast("Select a target first.");
+    }
+  }
+
+  function updateBattleBar() {
+    const v = G.view;
+    const anySel = (G.mode === "fire" && G.fireTarget) ||
+                   (G.mode === "reposition" && G.repoTankId && G.repoDest);
+    if (v.submitted) {
+      ["fireBtn","repoBtn","cancelActionBtn","rotateActionBtn","confirmBtn"].forEach(hide);
+      $("hint").textContent = "Action submitted.";
+      return;
+    }
+    show("fireBtn"); show("repoBtn");
+    G.mode ? show("cancelActionBtn") : hide("cancelActionBtn");
+    // Rotate only relevant when staging a reposition with a tank chosen.
+    (G.mode === "reposition" && G.repoTankId) ? show("rotateActionBtn") : hide("rotateActionBtn");
+    anySel ? show("confirmBtn") : hide("confirmBtn");
+
+    $("fireBtn").classList.toggle("secondary", G.mode !== "fire");
+    $("repoBtn").classList.toggle("secondary", G.mode !== "reposition");
+
+    if (G.mode === "fire") {
+      $("hint").textContent = G.fireTarget
+        ? `Aiming at (${G.fireTarget.x}, ${G.fireTarget.y}). Tap Confirm to fire.`
+        : "FIRE: tap a tile on the enemy grid to aim.";
+    } else if (G.mode === "reposition") {
+      if (!G.repoTankId) $("hint").textContent = "Tap one of your tanks to move (grey = on cooldown).";
+      else if (!G.repoDest) $("hint").textContent = "Tap a destination tile in your zone. Rotate to turn.";
+      else $("hint").textContent = "Destination set. Tap Confirm to move.";
+    } else {
+      $("hint").textContent = "Choose Fire or Reposition.";
+    }
+  }
+
+  // ---- Turn timer -----------------------------------------------------------
+  function manageTimer() {
+    // Reset the countdown at the start of each new round we render in battle.
+    if (lastPhase !== "battle" || G._timerRound !== G.view.round) {
+      G._timerRound = G.view.round;
+      G.turnDeadline = Date.now() + G.turnTimeMs;
+      startTimer();
+    }
+  }
+  function startTimer() {
+    stopTimer();
+    show("timer");
+    tickTimer();
+    G.timerInterval = setInterval(tickTimer, 250);
+  }
+  function tickTimer() {
+    const remain = Math.max(0, G.turnDeadline - Date.now());
+    const secs = Math.ceil(remain / 1000);
+    const el = $("timer");
+    el.textContent = secs;
+    el.classList.toggle("low", secs <= 10);
+    if (remain <= 0) stopTimer();
+  }
+  function stopTimer() {
+    if (G.timerInterval) { clearInterval(G.timerInterval); G.timerInterval = null; }
+    hide("timer");
+  }
+
+  // ---- Round result feedback ------------------------------------------------
+  function applyRoundResult(result) {
+    // Reset local action mode + staged selections for the next round.
+    resetActionSelection();
+    // Give simple textual feedback about my shot.
+    const myShot = result.shots.find((s) => s.slot === G.slot);
+    if (myShot) {
+      if (myShot.sunkTankId) toast("Direct hit — enemy tank SUNK!");
+      else if (myShot.hit) toast("Hit!");
+      else toast("Miss.");
+    }
+    const enemyShot = result.shots.find((s) => s.slot !== G.slot);
+    if (enemyShot && enemyShot.hit) {
+      // My own tank was hit somewhere.
+      if (enemyShot.sunkTankId) toast("One of your tanks was sunk!");
+    }
+  }
+
+  // ---- Game over ------------------------------------------------------------
+  function onGameOver(msg) {
+    stopTimer();
+    show("overScreen");
+    const won = msg.youWon;
+    $("overTitle").textContent = won ? "VICTORY" : "DEFEAT";
+    $("overTitle").style.color = won ? "#4ade80" : "#ff6b6b";
+    let m = won ? "All enemy tanks destroyed." : "Your fleet was wiped out.";
+    if (msg.reason === "opponent_disconnected") {
+      m = won ? "Opponent disconnected — you win by default." : m;
+    }
+    $("overMsg").textContent = m;
+  }
+
+  // ---- Opponent presence (disconnect pause) --------------------------------
+  function onOpponentPresence(connected) {
+    if (!connected && G.view && (G.view.phase === "battle" || G.view.phase === "deploy")) {
+      showWait("Opponent disconnected, waiting for reconnect...");
+    } else if (connected) {
+      hideWait();
+    }
+  }
+
+  // ===========================================================================
+  // Three.js rendering
+  // ===========================================================================
+  let scene, camera, renderer, controls, raycaster, mouse;
+  let boardGroup, tankGroup, markerGroup, ghostGroup;
+  let tileMeshes = [];        // {x,y,side,mesh} for click picking
+  let ghostMesh = null;
+
+  // In battle we show two boards side by side: my board (left) and the enemy
+  // fog-of-war board (right). In deploy we only show my board centered.
+  // Enemy board is offset in +X so both fit in one scene.
+  const ENEMY_OFFSET_X = GRID_W + 6;
+
+  function initThree() {
+    const wrap = $("canvas-wrap");
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b1220);
+
+    camera = new THREE.PerspectiveCamera(50, wrap.clientWidth / wrap.clientHeight, 0.1, 1000);
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    wrap.appendChild(renderer.domElement);
+
+    // Lights
+    const amb = new THREE.AmbientLight(0xffffff, 0.75);
+    scene.add(amb);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(20, 40, 10);
+    scene.add(dir);
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.maxPolarAngle = Math.PI / 2.1;
+    controls.minDistance = 8;
+    controls.maxDistance = 90;
+    // Explicit touch gestures: one finger orbits, two fingers pinch-zoom + pan.
+    // This coexists with our tap-vs-drag detection (small moves = tile taps).
+    controls.touches = {
+      ONE: THREE.TOUCH.ROTATE,
+      TWO: THREE.TOUCH.DOLLY_PAN,
+    };
+
+    raycaster = new THREE.Raycaster();
+    mouse = new THREE.Vector2();
+
+    boardGroup = new THREE.Group();
+    tankGroup = new THREE.Group();
+    markerGroup = new THREE.Group();
+    ghostGroup = new THREE.Group();
+    scene.add(boardGroup, tankGroup, markerGroup, ghostGroup);
+
+    // pointerdown on the canvas; pointerup on window so OrbitControls' pointer
+    // capture can't swallow the release event before our tap detection runs.
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
+    // Resize on both window resize AND mobile orientation changes.
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", () => setTimeout(onResize, 150));
+    animate();
+  }
+
+  function onResize() {
+    const wrap = $("canvas-wrap");
+    const w = wrap.clientWidth || window.innerWidth;
+    const h = wrap.clientHeight || window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    if (controls) controls.update();
+    if (renderer) renderer.render(scene, camera);
+  }
+  function render3D() { /* rendering handled by animate loop */ }
+
+  // Convert tile (x,y) to world center. side: "mine" | "enemy".
+  function tileToWorld(x, y, side) {
+    const ox = side === "enemy" ? ENEMY_OFFSET_X : 0;
+    return {
+      x: (x + ox) - GRID_W / 2 + 0.5,
+      z: y - GRID_H / 2 + 0.5,
+    };
+  }
+
+  // Map tile data (land/void/hill) is server-authoritative: it arrives in the
+  // player view as `view.grid` once a map is selected. The client renders
+  // directly from that — maps.js on the server is the single source of truth.
+
+  // Colors
+  const COL_VOID = 0x102033;
+  const COL_LAND = 0x2f4a2f;
+  const COL_HILL = 0x4a5a2f;
+  const COL_ZONE_MINE = 0x1f3a5f;
+  const COL_ZONE_ENEMY = 0x3a1f2f;
+
+  function inZone(zone, x, y) {
+    return zone && x >= zone.x && x < zone.x + zone.w && y >= zone.y && y < zone.y + zone.h;
+  }
+
+  // (Re)build the whole board from the current view.
+  function buildScene() {
+    if (!scene) return;
+    clearGroup(boardGroup);
+    clearGroup(tankGroup);
+    clearGroup(markerGroup);
+    clearGhost();
+    tileMeshes = [];
+
+    const v = G.view;
+    const grid = v.grid; // server-authoritative tile data
+    if (!grid) return;
+
+    const battle = v.phase === "battle";
+
+    // --- My board (left) ---
+    buildBoardTiles(grid, "mine", v.myZone, true);
+    // Place my tanks (fully visible to me).
+    v.myTanks.forEach((t) => {
+      if (t.tiles && t.tiles.length) addTankMesh(t, "mine");
+    });
+    // My damage markers: tiles the enemy has hit on me.
+    v.myTanks.forEach((t) => {
+      (t.hitTiles || []).forEach((h) => addMarker(h.x, h.y, "mine", true));
+    });
+
+    // --- Enemy board (right) — only during battle ---
+    if (battle) {
+      buildBoardTiles(grid, "enemy", v.enemyZone, false);
+      // Fog-of-war: only the tiles I've fired on, hit/miss.
+      (v.enemyShots || []).forEach((s) => addMarker(s.x, s.y, "enemy", s.hit));
+      // Sunk enemy tanks are revealed.
+      (v.enemySunkTanks || []).forEach((t) => {
+        t.tiles.forEach((tl) => addSunkTile(tl.x, tl.y, "enemy"));
+      });
+    }
+
+    frameCamera(battle);
+  }
+
+  function clearGroup(g) {
+    while (g && g.children.length) {
+      const c = g.children.pop();
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) c.material.dispose();
+      g.remove(c);
+    }
+  }
+
+  function buildBoardTiles(grid, side, zone, isMine) {
+    const geo = new THREE.BoxGeometry(0.96, 0.2, 0.96);
+    for (let y = 0; y < GRID_H; y++) {
+      for (let x = 0; x < GRID_W; x++) {
+        const t = grid[y][x];
+        let color = COL_VOID;
+        if (t === 1) color = COL_LAND;
+        else if (t === 2) color = COL_HILL;
+
+        // Tint deployment zone tiles that are playable.
+        if (t !== 0 && inZone(zone, x, y)) {
+          color = isMine ? COL_ZONE_MINE : COL_ZONE_ENEMY;
+        }
+
+        const mat = new THREE.MeshStandardMaterial({ color });
+        const mesh = new THREE.Mesh(geo, mat);
+        const w = tileToWorld(x, y, side);
+        mesh.position.set(w.x, t === 0 ? -0.1 : 0, w.z);
+        boardGroup.add(mesh);
+        // Only playable tiles are pickable.
+        tileMeshes.push({ x, y, side, mesh, playable: t !== 0 });
+        mesh.userData = { x, y, side, playable: t !== 0 };
+      }
+    }
+  }
+
+  function addTankMesh(tank, side) {
+    let [w, h] = tank.footprint;
+    if (tank.rotation === 1) [w, h] = [h, w];
+    const geo = new THREE.BoxGeometry(w * 0.9, 0.6, h * 0.9);
+    const color = TANK_COLORS[tank.type] || "#888";
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(color),
+      transparent: tank.sunk,
+      opacity: tank.sunk ? 0.35 : 1,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    // Center of footprint.
+    const cx = tank.position.x + w / 2 - 0.5;
+    const cy = tank.position.y + h / 2 - 0.5;
+    const wc = tileToWorld(cx, cy, side);
+    mesh.position.set(wc.x, 0.4, wc.z);
+    mesh.userData = { tankId: tank.tankId };
+    tankGroup.add(mesh);
+  }
+
+  // Hit/miss marker. hit=true -> red sphere; false -> white flat disc.
+  function addMarker(x, y, side, hit) {
+    const w = tileToWorld(x, y, side);
+    let mesh;
+    if (hit) {
+      const geo = new THREE.SphereGeometry(0.28, 12, 12);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xff3b30, emissive: 0x551111 });
+      mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(w.x, 0.55, w.z);
+    } else {
+      const geo = new THREE.CylinderGeometry(0.22, 0.22, 0.08, 12);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xdfe7f0 });
+      mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(w.x, 0.25, w.z);
+    }
+    markerGroup.add(mesh);
+  }
+
+  function addSunkTile(x, y, side) {
+    const w = tileToWorld(x, y, side);
+    const geo = new THREE.BoxGeometry(0.9, 0.5, 0.9);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(w.x, 0.25, w.z);
+    markerGroup.add(mesh);
+  }
+
+  // Frame camera over the relevant board(s).
+  function frameCamera(battle) {
+    if (!controls) return;
+    if (battle) {
+      controls.target.set(ENEMY_OFFSET_X / 2, 0, 0);
+      camera.position.set(ENEMY_OFFSET_X / 2, 34, 26);
+    } else {
+      controls.target.set(0, 0, 0);
+      camera.position.set(0, 30, 22);
+    }
+    controls.update();
+  }
+
+  // ---- Placement/reposition ghost preview ----------------------------------
+  function clearGhost() {
+    clearGroup(ghostGroup);
+    ghostMesh = null;
+  }
+
+  // Rebuild a footprint-shaped ghost at a given tile (deploy placement or
+  // reposition destination). `tile` is the top-left {x,y}.
+  function drawFootprintGhost(footprint, rotation, side, tile, color) {
+    let [w, h] = footprint;
+    if (rotation === 1) [w, h] = [h, w];
+    const geo = new THREE.BoxGeometry(w * 0.9, 0.6, h * 0.9);
+    const mat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.5 });
+    const mesh = new THREE.Mesh(geo, mat);
+    const cx = tile.x + w / 2 - 0.5;
+    const cy = tile.y + h / 2 - 0.5;
+    const wc = tileToWorld(cx, cy, side);
+    mesh.position.set(wc.x, 0.4, wc.z);
+    ghostGroup.add(mesh);
+  }
+
+  // A small marker showing the currently-aimed fire target (before Confirm).
+  function drawAimGhost(tile) {
+    const geo = new THREE.TorusGeometry(0.4, 0.09, 8, 20);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffd166, emissive: 0x4a3a00 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.rotation.x = Math.PI / 2;
+    const wc = tileToWorld(tile.x, tile.y, "enemy");
+    mesh.position.set(wc.x, 0.6, wc.z);
+    ghostGroup.add(mesh);
+  }
+
+  // Hover preview (mouse only — touch has no hover, so this is a nicety).
+  let hoverTile = null;
+  function updateGhost() {
+    clearGhost();
+    if (!G.view) return;
+    // Deploy: preview the tank being placed at hovered tile.
+    if (G.view.phase === "deploy" && G.selectedTankId && hoverTile && hoverTile.side === "mine") {
+      const t = G.view.myTanks.find((tk) => tk.tankId === G.selectedTankId);
+      if (t) drawFootprintGhost(t.footprint, G.placeRotation, "mine", hoverTile, 0x7fd1ff);
+    }
+    // Battle reposition: if a destination is staged, keep showing it; else hover preview.
+    if (G.view.phase === "battle" && G.mode === "reposition" && G.repoTankId) {
+      const t = G.view.myTanks.find((tk) => tk.tankId === G.repoTankId);
+      const tile = G.repoDest || (hoverTile && hoverTile.side === "mine" ? hoverTile : null);
+      if (t && tile) drawFootprintGhost(t.footprint, G.repoRotation, "mine", tile, 0x7fd1ff);
+    }
+    // Battle fire: keep the staged aim marker visible.
+    if (G.view.phase === "battle" && G.mode === "fire" && G.fireTarget) {
+      drawAimGhost(G.fireTarget);
+    }
+  }
+
+  // Persistent preview for a chosen reposition destination.
+  function previewRepo(tile) {
+    clearGhost();
+    const t = G.view.myTanks.find((tk) => tk.tankId === G.repoTankId);
+    if (t) drawFootprintGhost(t.footprint, G.repoRotation, "mine", tile, 0x7fd1ff);
+  }
+
+  // Only show hover preview when a mouse is present (fine-pointer devices).
+  const hasHover = window.matchMedia && window.matchMedia("(hover: hover)").matches;
+  window.addEventListener("pointermove", (e) => {
+    if (!renderer || !G.view || !hasHover) return;
+    if (e.pointerType === "touch") return;
+    const hit = pickTile(e);
+    if (hit) { hoverTile = { x: hit.x, y: hit.y, side: hit.side }; updateGhost(); }
+  });
+
+  function pickTile(e) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const meshes = tileMeshes.map((t) => t.mesh);
+    const hits = raycaster.intersectObjects(meshes);
+    if (!hits.length) return null;
+    return hits[0].object.userData;
+  }
+
+  // ---- Tap vs drag detection -----------------------------------------------
+  // On touch, dragging the canvas orbits/pans the camera (OrbitControls). We
+  // only treat a pointer interaction as a TILE TAP if it barely moved between
+  // pointerdown and pointerup. This prevents camera drags from mis-selecting.
+  let downPt = null;
+  const TAP_SLOP = 10; // px of movement still considered a tap
+  function onPointerDown(e) {
+    downPt = { x: e.clientX, y: e.clientY, id: e.pointerId };
+  }
+  function onPointerUp(e) {
+    if (!downPt || e.pointerId !== downPt.id) { downPt = null; return; }
+    const moved = Math.hypot(e.clientX - downPt.x, e.clientY - downPt.y);
+    downPt = null;
+    if (moved > TAP_SLOP) return; // it was a drag (camera move), not a tap
+    if (!G.view) return;
+    const picked = pickTile(e);
+    if (!picked) return;
+    if (G.view.phase === "deploy") handleDeployTap(picked);
+    else if (G.view.phase === "battle") handleBattleTap(picked);
+  }
+
+  function handleDeployTap(picked) {
+    if (picked.side !== "mine" || !G.selectedTankId) return;
+    sendMsg({
+      type: "place_tank",
+      tankId: G.selectedTankId,
+      position: { x: picked.x, y: picked.y },
+      rotation: G.placeRotation,
+    });
+    G.selectedTankId = null;
+    clearGhost();
+  }
+
+  // Battle: taps STAGE a selection (ghost). Submission happens via Confirm.
+  function handleBattleTap(picked) {
+    const v = G.view;
+    if (v.submitted) return;
+
+    if (G.mode === "fire") {
+      if (picked.side !== "enemy") { toast("Aim on the ENEMY grid (right)."); return; }
+      G.fireTarget = { x: picked.x, y: picked.y };
+      clearGhost(); drawAimGhost(G.fireTarget);
+      updateBattleBar();
+    } else if (G.mode === "reposition") {
+      if (picked.side !== "mine") { toast("Reposition within YOUR grid (left)."); return; }
+      if (!G.repoTankId) {
+        const tank = v.myTanks.find((t) =>
+          t.tiles && t.tiles.some((tl) => tl.x === picked.x && tl.y === picked.y));
+        if (!tank) { toast("Tap one of your tanks to move it."); return; }
+        if (tank.sunk) { toast("That tank is sunk."); return; }
+        if (tank.onCooldown) { toast("That tank is on reposition cooldown."); return; }
+        G.repoTankId = tank.tankId;
+        G.repoRotation = tank.rotation;
+        G.repoDest = null;
+        updateBattleBar();
+        toast("Now tap a destination tile. Rotate to turn.");
+      } else {
+        // Stage the destination (top-left tile). Confirm submits it.
+        G.repoDest = { x: picked.x, y: picked.y };
+        previewRepo(G.repoDest);
+        updateBattleBar();
+      }
+    } else {
+      toast("Pick Fire or Reposition first.");
+    }
+  }
+
+  // ---- Canvas zoom controls (touch-friendly pinch alternative) -------------
+  function zoomCamera(factor) {
+    if (!camera || !controls) return;
+    // Dolly the camera toward/away from the orbit target.
+    const dir = camera.position.clone().sub(controls.target);
+    dir.multiplyScalar(factor);
+    camera.position.copy(controls.target).add(dir);
+    controls.update();
+  }
+  $("zoomInBtn").addEventListener("pointerup", () => zoomCamera(0.8));
+  $("zoomOutBtn").addEventListener("pointerup", () => zoomCamera(1.25));
+
+  // ---- Boot -----------------------------------------------------------------
+  initThree();
+  connect();
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Render.com deployment config for Warborn (Phase 1).
+# A single free-tier Web Service: builds with npm install, runs one Node process
+# that serves the static client AND handles WebSocket upgrades on the same port.
+services:
+  - type: web
+    name: warborn
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server/server.js
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.1
