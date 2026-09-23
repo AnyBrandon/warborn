@@ -406,6 +406,7 @@
       show("mapscreen");
       setupMapScreen();
       stopTimer();
+      G._framedFor = undefined; // re-frame camera on next deploy/battle
     } else if (v.phase === "deploy") {
       hide("mapscreen"); hide("overScreen");
       show("tray"); hide("actionbar"); show("zoomctl");
@@ -895,15 +896,28 @@
     markerGroup.add(mesh);
   }
 
-  // Frame camera over the relevant board(s).
+  // Frame camera over the relevant board(s). We keep the camera framing stable
+  // across re-renders in the same phase so it doesn't snap back while the player
+  // is orbiting; only re-frame on a phase change.
   function frameCamera(battle) {
     if (!controls) return;
+    if (battle === G._framedFor) return; // already framed for this phase
+    G._framedFor = battle;
+
     if (battle) {
+      // Look across both boards, biased toward the enemy board (where you fire).
       controls.target.set(ENEMY_OFFSET_X / 2, 0, 0);
       camera.position.set(ENEMY_OFFSET_X / 2, 34, 26);
     } else {
-      controls.target.set(0, 0, 0);
-      camera.position.set(0, 30, 22);
+      // Deploy: center the camera on THIS player's own zone so they're always
+      // looking at their placement area (A's zone and B's zone differ).
+      const z = G.view && G.view.myZone ? G.view.myZone : { x: 0, y: 0, w: GRID_W, h: GRID_H };
+      const cx = z.x + z.w / 2 - 0.5;
+      const cy = z.y + z.h / 2 - 0.5;
+      const wc = tileToWorld(cx, cy, "mine");
+      controls.target.set(wc.x, 0, wc.z);
+      // Position the camera "behind" the zone (offset in +z) looking at it.
+      camera.position.set(wc.x, 24, wc.z + 16);
     }
     controls.update();
   }
@@ -1014,7 +1028,15 @@
   }
 
   function handleDeployTap(picked) {
-    if (picked.side !== "mine" || !G.selectedTankId) return;
+    if (picked.side !== "mine") return;
+    if (!G.selectedTankId) { toast("Pick a tank from the tray first."); return; }
+    // Client-side guard: the tapped tile must be inside MY deployment zone.
+    // (The server also enforces this, but checking here gives instant feedback
+    //  instead of a silent rejection when a player taps the opponent's area.)
+    if (!inZone(G.view.myZone, picked.x, picked.y)) {
+      toast("Place inside YOUR highlighted zone.");
+      return;
+    }
     sendMsg({
       type: "place_tank",
       tankId: G.selectedTankId,
