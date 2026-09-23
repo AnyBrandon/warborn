@@ -335,9 +335,9 @@
         G.view = msg.view;
         renderFromView();
         break;
-      case "round_result":
+      case "action_result":
         G.view = msg.view;
-        applyRoundResult(msg.result);
+        applyActionResult(msg.result);
         renderFromView();
         break;
       case "game_over":
@@ -441,8 +441,9 @@
       buildScene();
       updateBattleBar();
       manageTimer();
-      if (v.submitted && !v.oppSubmitted) {
-        showWait("Action locked in. Waiting for opponent...");
+      // Alternating turns: only run the timer / show controls on YOUR turn.
+      if (!v.myTurn) {
+        showWait("Opponent's turn — waiting...");
       } else {
         hideWait();
       }
@@ -468,16 +469,14 @@
 
   function updateHud() {
     const v = G.view;
-    // Diagnostic: surface the slot + actual received zone so a screenshot alone
-    // reveals whether two browsers are wrongly sharing the same slot/zone.
-    if (v.myZone) {
-      $("zonetag").textContent = `zone ${v.myZone.x},${v.myZone.y}`;
-    } else {
-      $("zonetag").textContent = "";
-    }
     if (v.phase === "battle") {
+      // Whose turn is it? Make it clearly visible.
+      $("zonetag").textContent = v.myTurn ? "YOUR TURN" : "OPPONENT'S TURN";
+      $("zonetag").style.color = v.myTurn ? "#4ade80" : "#ff9f6b";
       show("round"); $("round").textContent = "ROUND " + v.round;
     } else {
+      $("zonetag").textContent = "";
+      $("zonetag").style.color = "";
       hide("round");
     }
   }
@@ -490,6 +489,7 @@
     heavy: "#ef4444",
     medium: "#3b82f6",
     light: "#22c55e",
+    plane: "#a855f7", // Transportation Plane — distinct purple (non-combat)
   };
 
   // ---- Deployment tray ------------------------------------------------------
@@ -563,6 +563,11 @@
     toast("Tap an enemy tile to aim, then Confirm.");
   });
   $("repoBtn").addEventListener("pointerup", () => {
+    // Guard: no reposition once the Transportation Plane is destroyed.
+    if (G.view && !G.view.canReposition) {
+      toast("Reposition disabled — your Transportation Plane was destroyed.");
+      return;
+    }
     G.mode = "reposition";
     G.repoTankId = null; G.repoDest = null; G.fireTarget = null;
     clearGhost();
@@ -598,14 +603,28 @@
     const v = G.view;
     const anySel = (G.mode === "fire" && G.fireTarget) ||
                    (G.mode === "reposition" && G.repoTankId && G.repoDest);
-    if (v.submitted) {
+
+    // Not your turn: hide all action controls; the wait overlay handles messaging.
+    if (!v.myTurn) {
       ["fireBtn","repoBtn","cancelActionBtn","rotateActionBtn","confirmBtn"].forEach(hide);
-      $("hint").textContent = "Action submitted.";
+      $("hint").textContent = "Opponent is taking their turn...";
       return;
     }
-    show("fireBtn"); show("repoBtn");
+
+    show("fireBtn");
+    // Reposition is gated on the Transportation Plane being alive (authoritative
+    // server-side too). Disable + explain once the plane is destroyed.
+    const repoBtn = $("repoBtn");
+    show("repoBtn");
+    if (!v.canReposition) {
+      repoBtn.disabled = true;
+      repoBtn.title = "Reposition disabled — your Transportation Plane was destroyed.";
+    } else {
+      repoBtn.disabled = false;
+      repoBtn.title = "";
+    }
+
     G.mode ? show("cancelActionBtn") : hide("cancelActionBtn");
-    // Rotate only relevant when staging a reposition with a tank chosen.
     (G.mode === "reposition" && G.repoTankId) ? show("rotateActionBtn") : hide("rotateActionBtn");
     anySel ? show("confirmBtn") : hide("confirmBtn");
 
@@ -615,21 +634,26 @@
     if (G.mode === "fire") {
       $("hint").textContent = G.fireTarget
         ? `Aiming at (${G.fireTarget.x}, ${G.fireTarget.y}). Tap Confirm to fire.`
-        : "FIRE: tap a tile on the enemy grid to aim.";
+        : "FIRE: tap a tile in the ENEMY zone to aim.";
     } else if (G.mode === "reposition") {
-      if (!G.repoTankId) $("hint").textContent = "Tap one of your tanks to move (grey = on cooldown).";
+      if (!G.repoTankId) $("hint").textContent = "Tap one of your tanks to move.";
       else if (!G.repoDest) $("hint").textContent = "Tap a destination tile in your zone. Rotate to turn.";
       else $("hint").textContent = "Destination set. Tap Confirm to move.";
     } else {
-      $("hint").textContent = "Choose Fire or Reposition.";
+      $("hint").textContent = v.canReposition
+        ? "Your turn — choose Fire or Reposition."
+        : "Your turn — Fire. (Reposition disabled: plane destroyed.)";
     }
   }
 
   // ---- Turn timer -----------------------------------------------------------
+  // Runs only for the local player's own turn; resets when a new turn begins.
   function manageTimer() {
-    // Reset the countdown at the start of each new round we render in battle.
-    if (lastPhase !== "battle" || G._timerRound !== G.view.round) {
-      G._timerRound = G.view.round;
+    const v = G.view;
+    if (!v.myTurn) { stopTimer(); return; }
+    // New turn for me (turn counter changed) -> restart the 30s countdown.
+    if (G._timerTurn !== v.turn) {
+      G._timerTurn = v.turn;
       G.turnDeadline = Date.now() + G.turnTimeMs;
       startTimer();
     }
@@ -653,21 +677,33 @@
     hide("timer");
   }
 
-  // ---- Round result feedback ------------------------------------------------
-  function applyRoundResult(result) {
-    // Reset local action mode + staged selections for the next round.
+  // ---- Single-action result feedback ---------------------------------------
+  function applyActionResult(result) {
+    // Reset my local staging for the next time it's my turn.
     resetActionSelection();
-    // Give simple textual feedback about my shot.
-    const myShot = result.shots.find((s) => s.slot === G.slot);
-    if (myShot) {
-      if (myShot.sunkTankId) toast("Direct hit — enemy tank SUNK!");
-      else if (myShot.hit) toast("Hit!");
-      else toast("Miss.");
+
+    const iActed = result.actorSlot === G.slot;
+    if (result.kind === "fire" && result.shot) {
+      if (iActed) {
+        if (result.shot.sunkTankId) toast("Direct hit — enemy unit SUNK!");
+        else if (result.shot.hit) toast("Hit!");
+        else toast("Miss.");
+      } else if (result.shot.hit) {
+        toast(result.shot.sunkTankId ? "One of your units was sunk!" : "You were hit!");
+      }
+    } else if (result.kind === "pass") {
+      toast(iActed ? "You ran out of time — turn passed." : "Opponent's turn timed out.");
+    } else if (result.kind === "reposition" && iActed) {
+      toast("Unit repositioned.");
     }
-    const enemyShot = result.shots.find((s) => s.slot !== G.slot);
-    if (enemyShot && enemyShot.hit) {
-      // My own tank was hit somewhere.
-      if (enemyShot.sunkTankId) toast("One of your tanks was sunk!");
+
+    // Plane-destroyed callout (affects whoever lost their plane).
+    if (result.planeDestroyed) {
+      if (result.planeDestroyed === G.slot) {
+        toast("Your Transportation Plane is destroyed — Reposition disabled!");
+      } else {
+        toast("Enemy Transportation Plane destroyed — they can no longer reposition.");
+      }
     }
   }
 
@@ -702,10 +738,9 @@
   let tileMeshes = [];        // {x,y,side,mesh} for click picking
   let ghostMesh = null;
 
-  // In battle we show two boards side by side: my board (left) and the enemy
-  // fog-of-war board (right). In deploy we only show my board centered.
-  // Enemy board is offset in +X so both fit in one scene.
-  const ENEMY_OFFSET_X = GRID_W + 6;
+  // Phase 2: battle is rendered on ONE unified map (same single landmass as
+  // deploy). No second offset board — the enemy zone is fog-of-war shown in its
+  // real position on the shared map.
 
   function initThree() {
     const wrap = $("canvas-wrap");
@@ -775,11 +810,12 @@
   }
   function render3D() { /* rendering handled by animate loop */ }
 
-  // Convert tile (x,y) to world center. side: "mine" | "enemy".
+  // Convert tile (x,y) to world center on the single unified map.
+  // `side` is retained only for API compatibility with existing callers; there
+  // is no longer any spatial offset — deploy and battle share one board.
   function tileToWorld(x, y, side) {
-    const ox = side === "enemy" ? ENEMY_OFFSET_X : 0;
     return {
-      x: (x + ox) - GRID_W / 2 + 0.5,
+      x: x - GRID_W / 2 + 0.5,
       z: y - GRID_H / 2 + 0.5,
     };
   }
@@ -814,28 +850,27 @@
 
     const battle = v.phase === "battle";
 
-    // --- My board (left) ---
-    // During deploy, also tint the opponent's zone on this same board so both
-    // zones read as distinct, non-overlapping regions (opponent's is not
-    // clickable — handleDeployTap only accepts tiles inside v.myZone).
-    buildBoardTiles(grid, "mine", v.myZone, true, battle ? null : v.enemyZone);
-    // Place my tanks (fully visible to me).
+    // ONE unified board for BOTH phases now. Tiles are tinted per zone (mine =
+    // blue, enemy = red, neutral = land/hill) and tagged with a `side` derived
+    // from which zone they fall in, so the tap handlers know mine vs enemy.
+    buildBoardTiles(grid, v.myZone, v.enemyZone);
+
+    // My own tanks are always fully visible to me.
     v.myTanks.forEach((t) => {
-      if (t.tiles && t.tiles.length) addTankMesh(t, "mine");
+      if (t.tiles && t.tiles.length) addTankMesh(t);
     });
-    // My damage markers: tiles the enemy has hit on me.
+    // Damage markers on my tanks (tiles the enemy has hit).
     v.myTanks.forEach((t) => {
-      (t.hitTiles || []).forEach((h) => addMarker(h.x, h.y, "mine", true));
+      (t.hitTiles || []).forEach((h) => addMarker(h.x, h.y, true));
     });
 
-    // --- Enemy board (right) — only during battle ---
+    // Battle: enemy zone is fog-of-war IN ITS REAL POSITION on this same map.
     if (battle) {
-      buildBoardTiles(grid, "enemy", v.enemyZone, false);
-      // Fog-of-war: only the tiles I've fired on, hit/miss.
-      (v.enemyShots || []).forEach((s) => addMarker(s.x, s.y, "enemy", s.hit));
-      // Sunk enemy tanks are revealed.
+      // Only the tiles I've fired at are revealed (hit/miss); nothing else.
+      (v.enemyShots || []).forEach((s) => addMarker(s.x, s.y, s.hit));
+      // Sunk enemy tanks are revealed at their true location.
       (v.enemySunkTanks || []).forEach((t) => {
-        t.tiles.forEach((tl) => addSunkTile(tl.x, tl.y, "enemy"));
+        t.tiles.forEach((tl) => addSunkTile(tl.x, tl.y));
       });
     }
 
@@ -851,11 +886,12 @@
     }
   }
 
-  // `zone` is the primary zone tinted for this board (mine on the "mine" board,
-  // enemy on the "enemy" board). `otherZone` is an optional secondary zone tinted
-  // with COL_ZONE_ENEMY — used during deploy so the opponent's zone is visibly
-  // distinct from neutral land on the player's own single board (purely visual).
-  function buildBoardTiles(grid, side, zone, isMine, otherZone) {
+  // Build the single unified board. Every tile is tagged with `side`:
+  //   "mine"    -> inside my deployment zone (blue tint)
+  //   "enemy"   -> inside the opponent's zone (red tint) — fire targets here
+  //   "neutral" -> everything else (plain land/hill/void)
+  // The tap handlers use this `side` to route placement vs firing.
+  function buildBoardTiles(grid, myZone, enemyZone) {
     const geo = new THREE.BoxGeometry(0.96, 0.2, 0.96);
     for (let y = 0; y < GRID_H; y++) {
       for (let x = 0; x < GRID_W; x++) {
@@ -864,30 +900,28 @@
         if (t === 1) color = COL_LAND;
         else if (t === 2) color = COL_HILL;
 
-        // Tint deployment zone tiles that are playable.
-        if (t !== 0 && inZone(zone, x, y)) {
-          color = isMine ? COL_ZONE_MINE : COL_ZONE_ENEMY;
-        } else if (t !== 0 && otherZone && inZone(otherZone, x, y)) {
-          // Opponent's zone shown on my own board (deploy) — non-interactive tint.
-          color = COL_ZONE_ENEMY;
-        }
+        let side = "neutral";
+        if (t !== 0 && inZone(myZone, x, y)) { side = "mine"; color = COL_ZONE_MINE; }
+        else if (t !== 0 && inZone(enemyZone, x, y)) { side = "enemy"; color = COL_ZONE_ENEMY; }
 
         const mat = new THREE.MeshStandardMaterial({ color });
         const mesh = new THREE.Mesh(geo, mat);
-        const w = tileToWorld(x, y, side);
+        const w = tileToWorld(x, y);
         mesh.position.set(w.x, t === 0 ? -0.1 : 0, w.z);
         boardGroup.add(mesh);
-        // Only playable tiles are pickable.
         tileMeshes.push({ x, y, side, mesh, playable: t !== 0 });
         mesh.userData = { x, y, side, playable: t !== 0 };
       }
     }
   }
 
-  function addTankMesh(tank, side) {
+  function addTankMesh(tank) {
     let [w, h] = tank.footprint;
     if (tank.rotation === 1) [w, h] = [h, w];
     const geo = new THREE.BoxGeometry(w * 0.9, 0.6, h * 0.9);
+    // The non-combat Transportation Plane is drawn taller/lighter so it reads
+    // as a distinct, important unit (its loss disables Reposition).
+    const isPlane = tank.type === "plane";
     const color = TANK_COLORS[tank.type] || "#888";
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(color),
@@ -895,18 +929,17 @@
       opacity: tank.sunk ? 0.35 : 1,
     });
     const mesh = new THREE.Mesh(geo, mat);
-    // Center of footprint.
     const cx = tank.position.x + w / 2 - 0.5;
     const cy = tank.position.y + h / 2 - 0.5;
-    const wc = tileToWorld(cx, cy, side);
-    mesh.position.set(wc.x, 0.4, wc.z);
+    const wc = tileToWorld(cx, cy);
+    mesh.position.set(wc.x, isPlane ? 0.7 : 0.4, wc.z);
     mesh.userData = { tankId: tank.tankId };
     tankGroup.add(mesh);
   }
 
   // Hit/miss marker. hit=true -> red sphere; false -> white flat disc.
-  function addMarker(x, y, side, hit) {
-    const w = tileToWorld(x, y, side);
+  function addMarker(x, y, hit) {
+    const w = tileToWorld(x, y);
     let mesh;
     if (hit) {
       const geo = new THREE.SphereGeometry(0.28, 12, 12);
@@ -922,8 +955,8 @@
     markerGroup.add(mesh);
   }
 
-  function addSunkTile(x, y, side) {
-    const w = tileToWorld(x, y, side);
+  function addSunkTile(x, y) {
+    const w = tileToWorld(x, y);
     const geo = new THREE.BoxGeometry(0.9, 0.5, 0.9);
     const mat = new THREE.MeshStandardMaterial({ color: 0x555555 });
     const mesh = new THREE.Mesh(geo, mat);
@@ -954,16 +987,16 @@
     }
 
     if (battle) {
-      // Look across both boards (mine + enemy) which span ~2*GRID_W + gap wide.
-      const spanX = ENEMY_OFFSET_X + GRID_W;
-      fitTo(ENEMY_OFFSET_X / 2, 0, spanX, GRID_H);
+      // Unified battle view: frame the WHOLE shared map (both zones visible on
+      // one continuous board), centered on the map with a small margin.
+      fitTo(0, 0, GRID_W + 6, GRID_H + 6);
     } else {
       // Deploy: frame THIS player's own zone (A's and B's differ). Pad a little
       // so surrounding coastline is visible for tactical context.
       const z = G.view && G.view.myZone ? G.view.myZone : { x: 0, y: 0, w: GRID_W, h: GRID_H };
       const cx = z.x + z.w / 2 - 0.5;
       const cy = z.y + z.h / 2 - 0.5;
-      const wc = tileToWorld(cx, cy, "mine");
+      const wc = tileToWorld(cx, cy);
       fitTo(wc.x, wc.z, z.w + 12, z.h + 12);
     }
     controls.update();
@@ -977,7 +1010,7 @@
 
   // Rebuild a footprint-shaped ghost at a given tile (deploy placement or
   // reposition destination). `tile` is the top-left {x,y}.
-  function drawFootprintGhost(footprint, rotation, side, tile, color) {
+  function drawFootprintGhost(footprint, rotation, tile, color) {
     let [w, h] = footprint;
     if (rotation === 1) [w, h] = [h, w];
     const geo = new THREE.BoxGeometry(w * 0.9, 0.6, h * 0.9);
@@ -985,7 +1018,7 @@
     const mesh = new THREE.Mesh(geo, mat);
     const cx = tile.x + w / 2 - 0.5;
     const cy = tile.y + h / 2 - 0.5;
-    const wc = tileToWorld(cx, cy, side);
+    const wc = tileToWorld(cx, cy);
     mesh.position.set(wc.x, 0.4, wc.z);
     ghostGroup.add(mesh);
   }
@@ -996,7 +1029,7 @@
     const mat = new THREE.MeshStandardMaterial({ color: 0xffd166, emissive: 0x4a3a00 });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.rotation.x = Math.PI / 2;
-    const wc = tileToWorld(tile.x, tile.y, "enemy");
+    const wc = tileToWorld(tile.x, tile.y);
     mesh.position.set(wc.x, 0.6, wc.z);
     ghostGroup.add(mesh);
   }
@@ -1009,13 +1042,13 @@
     // Deploy: preview the tank being placed at hovered tile.
     if (G.view.phase === "deploy" && G.selectedTankId && hoverTile && hoverTile.side === "mine") {
       const t = G.view.myTanks.find((tk) => tk.tankId === G.selectedTankId);
-      if (t) drawFootprintGhost(t.footprint, G.placeRotation, "mine", hoverTile, 0x7fd1ff);
+      if (t) drawFootprintGhost(t.footprint, G.placeRotation, hoverTile, 0x7fd1ff);
     }
     // Battle reposition: if a destination is staged, keep showing it; else hover preview.
     if (G.view.phase === "battle" && G.mode === "reposition" && G.repoTankId) {
       const t = G.view.myTanks.find((tk) => tk.tankId === G.repoTankId);
       const tile = G.repoDest || (hoverTile && hoverTile.side === "mine" ? hoverTile : null);
-      if (t && tile) drawFootprintGhost(t.footprint, G.repoRotation, "mine", tile, 0x7fd1ff);
+      if (t && tile) drawFootprintGhost(t.footprint, G.repoRotation, tile, 0x7fd1ff);
     }
     // Battle fire: keep the staged aim marker visible.
     if (G.view.phase === "battle" && G.mode === "fire" && G.fireTarget) {
@@ -1027,7 +1060,7 @@
   function previewRepo(tile) {
     clearGhost();
     const t = G.view.myTanks.find((tk) => tk.tankId === G.repoTankId);
-    if (t) drawFootprintGhost(t.footprint, G.repoRotation, "mine", tile, 0x7fd1ff);
+    if (t) drawFootprintGhost(t.footprint, G.repoRotation, tile, 0x7fd1ff);
   }
 
   // Only show hover preview when a mouse is present (fine-pointer devices).
@@ -1097,7 +1130,7 @@
   // Battle: taps STAGE a selection (ghost). Submission happens via Confirm.
   function handleBattleTap(picked) {
     const v = G.view;
-    if (v.submitted) return;
+    if (!v.myTurn) return; // can only act on your own turn
 
     if (G.mode === "fire") {
       if (picked.side !== "enemy") { toast("Aim on the ENEMY grid (right)."); return; }
@@ -1111,7 +1144,6 @@
           t.tiles && t.tiles.some((tl) => tl.x === picked.x && tl.y === picked.y));
         if (!tank) { toast("Tap one of your tanks to move it."); return; }
         if (tank.sunk) { toast("That tank is sunk."); return; }
-        if (tank.onCooldown) { toast("That tank is on reposition cooldown."); return; }
         G.repoTankId = tank.tankId;
         G.repoRotation = tank.rotation;
         G.repoDest = null;

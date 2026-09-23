@@ -163,25 +163,27 @@ function genArchipelago(seed) {
   const rand = mulberry32(seed);
   const noise = fractal(rand, 5, 4);
   const g = blank();
-  // Several blob centers scattered around the map.
+  // Significantly LARGER islands (bigger radii) and pushed toward the outer
+  // corners, leaving a modestly larger neutral middle between the two sides.
   const blobs = [
-    [14, 14, 12], [16, 44, 11], [35, 30, 10],
-    [54, 14, 12], [55, 46, 11], [40, 50, 8],
+    [12, 13, 15], [13, 45, 14],   // left cluster (Player A)
+    [57, 13, 15], [56, 46, 14],   // right cluster (Player B)
   ];
   for (let y = 0; y < GRID_H; y++) {
     for (let x = 0; x < GRID_W; x++) {
       let mask = 0;
       for (const [bx, by, br] of blobs) mask = Math.max(mask, radial(x, y, bx, by, br));
-      const v = noise(x / GRID_W, y / GRID_H) * 0.5 + mask * 0.8;
-      if (v > 0.7) g[y][x] = LAND;
+      const v = noise(x / GRID_W, y / GRID_H) * 0.45 + mask * 0.85;
+      if (v > 0.66) g[y][x] = LAND;
     }
   }
-  keepLargestComponents(g, 5); // keep several islands
-  addHills(g, fractal(mulberry32(seed + 7), 3, 6), 0.68);
+  keepLargestComponents(g, 4); // keep the several distinct islands
+  addHills(g, fractal(mulberry32(seed + 7), 3, 6), 0.7);
   return {
     grid: g,
-    zoneA: { x: 4, y: 6, w: 26, h: 48 },
-    zoneB: { x: 40, y: 6, w: 26, h: 48 },
+    // Larger deployable footprints on each side; wider neutral gap in the middle.
+    zoneA: { x: 2, y: 4, w: 26, h: 52 },
+    zoneB: { x: 42, y: 4, w: 26, h: 52 },
   };
 }
 
@@ -211,8 +213,10 @@ function genHighland(seed) {
   }
   return {
     grid: g,
-    zoneA: { x: 8, y: 4, w: 54, h: 15 },
-    zoneB: { x: 8, y: 41, w: 54, h: 15 },
+    // LARGER player zones, SMALLER neutral middle band: zones now reach further
+    // toward the center (y 4-25 and 34-55), leaving only rows ~26-33 neutral.
+    zoneA: { x: 6, y: 4, w: 58, h: 22 },
+    zoneB: { x: 6, y: 34, w: 58, h: 22 },
   };
 }
 
@@ -253,18 +257,20 @@ function genSquid(seed) {
   river([[58,46],[57,45],[56,44],[55,44],[54,43],[53,42],[52,42],[51,41],[50,40],[49,40]]);
   river([[40,8],[40,9],[41,10],[41,11],[42,12],[42,13],[43,14],[43,15]]);
 
-  // Neutral middle terrain: a band of hills across the waist between the lobes.
+  // Neutral middle terrain: a NARROWER band of hills across the waist (the
+  // neutral zone shrinks so the two player lobes are larger). Rows 27-32 only.
   const hillNoise = fractal(mulberry32(seed + 11), 4, 7);
   for (let y = 0; y < GRID_H; y++)
     for (let x = 0; x < GRID_W; x++)
-      if (g[y][x] === LAND && y > 26 && y < 34 && hillNoise(x / GRID_W, y / GRID_H) > 0.5)
+      if (g[y][x] === LAND && y >= 27 && y <= 32 && hillNoise(x / GRID_W, y / GRID_H) > 0.45)
         g[y][x] = HILL;
 
   return {
     grid: g,
-    // North lobe vs south lobe, wide neutral middle between them.
-    zoneA: { x: 10, y: 3, w: 50, h: 16 },
-    zoneB: { x: 10, y: 41, w: 50, h: 16 },
+    // North lobe vs south lobe. LARGER player zones reaching toward the center,
+    // SMALLER neutral middle (only ~rows 26-33 between the zones).
+    zoneA: { x: 8, y: 2, w: 54, h: 23 },
+    zoneB: { x: 8, y: 34, w: 54, h: 23 },
   };
 }
 

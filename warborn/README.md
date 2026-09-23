@@ -31,9 +31,12 @@ Open http://localhost:3000 in two browser tabs (or two machines). In tab 1 click
 ## Gameplay
 
 - Player A picks the map (authoritative in Phase 1).
-- Both players deploy 10 tanks in their own zone: tap/click a tank in the tray, tap a tile, use **Rotate** (or press **R**) to turn it. Tap **Ready**.
-- Each round both players secretly submit ONE action (Fire or Reposition) or let the 30s timer expire (auto-pass). The server resolves both at once: repositions first, then fire against the updated board.
-- A tank sinks when all its footprint tiles are hit. Wipe out all 10 enemy tanks to win.
+- Both players deploy 10 units in their own zone: tap/click a unit in the tray, tap a tile, use **Rotate** (or press **R**) to turn it. Tap **Ready**.
+- Roster (10 units): 1 Command Tank, 2 Heavy, 3 Medium, 3 Light, and 1 **Transportation Plane** (1x4, non-combat — it can't fire but is placeable/targetable/sinkable).
+- Turns are **strict alternating** (Phase 2). A random player goes first, then players take turns one at a time. On your turn you pick ONE action (Fire, or Reposition if your plane is alive) and it resolves immediately. A 30s timer runs on the active player's turn only; if it expires you forfeit that turn and play passes to the opponent. The HUD shows whose turn it is.
+- **Transportation Plane gating**: you may only Reposition while your plane is alive. Once your plane is fully sunk, Reposition is permanently disabled (Fire remains). Enforced server-side.
+- Battle is shown on ONE unified map (same landmass as deploy): your units are fully visible in your zone, the enemy zone is fog-of-war in its real position (only hit/miss markers on tiles you've fired at; sunk enemy units are revealed). Tap an enemy-zone tile to aim, then Confirm to fire.
+- A unit sinks when all its footprint tiles are hit. Wipe out all 10 enemy units to win.
 
 ## Cross-platform (desktop / tablet / mobile)
 

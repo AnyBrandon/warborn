@@ -71,23 +71,16 @@ function broadcastState(match) {
 }
 
 // --- Turn timer --------------------------------------------------------------
-// When battle begins / a new round starts, run a 30s timer. On expiry, any
-// player who hasn't submitted is forced to "pass", then we resolve.
+// Start the 30s timer for the CURRENT active player's turn. On expiry, that
+// player forfeits the turn (no action) and play passes to the opponent.
 function startTurnTimer(match) {
   clearTurnTimer(match);
   match.turnDeadline = Date.now() + gl.TURN_TIME_MS;
   match.turnTimer = setTimeout(() => {
     if (match.phase !== "battle") return;
-    // Force-pass any missing actions.
-    for (const slot of ["A", "B"]) {
-      if (!match.pendingActions[slot]) {
-        const player = gl.getPlayerBySlot(match, slot);
-        if (player) {
-          match.pendingActions[slot] = { slot, action: "pass" };
-        }
-      }
-    }
-    finishRound(match);
+    const result = gl.timeoutTurn(match); // passes turn to opponent
+    broadcastActionResult(match, result);
+    if (match.phase === "battle") startTurnTimer(match);
   }, gl.TURN_TIME_MS);
 }
 
@@ -98,23 +91,19 @@ function clearTurnTimer(match) {
   }
 }
 
-// Resolve the round, broadcast the result + fresh state, then start next timer.
-function finishRound(match) {
-  clearTurnTimer(match);
-  const result = gl.resolveRound(match);
-
-  // Broadcast the full round result to both clients at once.
+// Broadcast a single resolved action (fire/reposition/pass) + fresh per-player
+// view to both clients. Handles game-over messaging.
+function broadcastActionResult(match, result) {
   for (const playerId of Object.keys(match.players)) {
     const sock = playerSockets.get(playerId);
     if (sock) {
       send(sock, {
-        type: "round_result",
+        type: "action_result",
         result,
         view: gl.buildPlayerView(match, playerId),
       });
     }
   }
-
   if (match.phase === "over") {
     for (const playerId of Object.keys(match.players)) {
       const sock = playerSockets.get(playerId);
@@ -125,8 +114,6 @@ function finishRound(match) {
         youWon: view.slot === match.winner,
       });
     }
-  } else if (match.phase === "battle") {
-    startTurnTimer(match);
   }
 }
 
@@ -308,13 +295,14 @@ function onSubmitAction(socket, msg) {
   const match = rooms.get(meta.roomCode);
   if (!match) return sendError(socket, "Room not found");
 
+  // Alternating turns: the active player's action resolves immediately, then
+  // the turn passes. Restart the timer for the new active player.
   const res = gl.submitAction(match, meta.playerId, msg);
   if (!res.ok) return sendError(socket, res.error);
 
-  broadcastState(match); // update "submitted / waiting" indicators
-  if (res.bothSubmitted) {
-    finishRound(match);
-  }
+  clearTurnTimer(match);
+  broadcastActionResult(match, res.result);
+  if (match.phase === "battle") startTurnTimer(match);
 }
 
 function onPlayAgain(socket) {

@@ -8,25 +8,30 @@
  *  - A Match has two players ("A" and "B"), a chosen map, per-player boards.
  *  - A board tracks placed tanks (with real footprints) and a "hits" set of
  *    tiles that have been fired upon (for both fog-of-war and reposition rules).
- *  - Turns are SIMULTANEOUS COMMIT-THEN-RESOLVE (see resolveRound).
+ *  - Turns are STRICT ALTERNATING (Phase 2): one player acts at a time, the
+ *    action resolves immediately (see resolveAction). A random player goes first.
+ *  - Reposition is gated on the player's Transportation Plane being alive.
  */
 
 const { MAPS, LAND, HILL } = require("./maps");
 
 // ---------------------------------------------------------------------------
-// Tank roster config (Phase 1: sizes only, all use the same Direct Cannon).
-// Stored as config so later phases can change composition/weapons easily.
-// footprint is [width, height] in tiles at rotation 0 (horizontal).
+// Roster config. footprint is [width, height] in tiles at rotation 0.
+// Phase 2: 3 Light Tanks (down from 4) + 1 Transportation Plane (non-combat).
+// The Transportation Plane cannot fire; it is placeable/targetable/sinkable
+// like any unit. While it is ALIVE the player may Reposition; once it is fully
+// sunk the player permanently loses Reposition (see canReposition).
+// `combat: false` marks a unit that cannot fire.
 // ---------------------------------------------------------------------------
 const TANK_ROSTER = [
-  { type: "command", label: "Command Tank", footprint: [2, 2], count: 1 },
-  { type: "heavy", label: "Heavy Tank", footprint: [2, 3], count: 2 },
-  { type: "medium", label: "Medium Tank", footprint: [2, 2], count: 3 },
-  { type: "light", label: "Light Tank", footprint: [1, 2], count: 4 },
+  { type: "command", label: "Command Tank", footprint: [2, 2], count: 1, combat: true },
+  { type: "heavy", label: "Heavy Tank", footprint: [2, 3], count: 2, combat: true },
+  { type: "medium", label: "Medium Tank", footprint: [2, 2], count: 3, combat: true },
+  { type: "light", label: "Light Tank", footprint: [1, 2], count: 3, combat: true },
+  { type: "plane", label: "Transportation Plane", footprint: [1, 4], count: 1, combat: false },
 ];
 
-const REPOSITION_COOLDOWN = 3; // a tank may reposition once every 3 rounds
-const TURN_TIME_MS = 30000; // 30 second turn timer
+const TURN_TIME_MS = 30000; // 30 second per-turn timer (single active player)
 
 // Build the flat list of tank instances a player must place (10 total).
 function buildRosterInstances() {
@@ -38,6 +43,7 @@ function buildRosterInstances() {
         tankId: `${def.type}_${i}`,
         type: def.type,
         label: def.label,
+        combat: def.combat,
         footprint: def.footprint.slice(),
         // Placement state (filled during deployment):
         position: null, // {x, y} top-left tile
@@ -46,7 +52,6 @@ function buildRosterInstances() {
         // Combat state:
         hitTiles: [], // tiles of this tank that have been hit
         sunk: false,
-        lastRepositionRound: -REPOSITION_COOLDOWN, // allows use on round 0
       });
     }
   }
@@ -98,9 +103,10 @@ function createMatch(roomCode) {
       // Filled as players join. Each: { id, slot, ready, tanks:[], connected }
     },
     phase: "lobby", // lobby -> deploy -> battle -> over
-    // Round handling for simultaneous resolve:
-    round: 0,
-    pendingActions: {}, // slot -> action object (cleared each round)
+    // Strict alternating turns (Phase 2):
+    round: 0, // increments each time it returns to the first player
+    turn: 0, // total turns taken this match (monotonic)
+    activeSlot: null, // whose turn it is: "A" | "B"
     turnTimer: null,
     winner: null,
   };
@@ -195,7 +201,18 @@ function allPlaced(player) {
   return player.tanks.every((t) => t.tiles.length > 0);
 }
 
+// A player may Reposition only while their Transportation Plane is NOT fully
+// sunk. Once the plane is destroyed, Reposition is permanently unavailable.
+function planeAlive(player) {
+  const plane = player.tanks.find((t) => t.type === "plane");
+  return !!plane && !plane.sunk;
+}
+function canReposition(player) {
+  return planeAlive(player);
+}
+
 // Mark ready; returns true when BOTH players are ready (battle can begin).
+// On battle start, randomly choose which player takes the first turn.
 function setReady(match, playerId) {
   const player = match.players[playerId];
   if (!player) return { ok: false, error: "No such player" };
@@ -208,32 +225,60 @@ function setReady(match, playerId) {
   if (both) {
     match.phase = "battle";
     match.round = 1;
-    match.pendingActions = {};
+    match.turn = 1;
+    // Random first player.
+    match.activeSlot = Math.random() < 0.5 ? "A" : "B";
   }
   return { ok: true, bothReady: both };
 }
 
 // ---------------------------------------------------------------------------
-// Turn / action submission
+// Turn / action submission (STRICT ALTERNATING — Phase 2)
 // ---------------------------------------------------------------------------
-// Record a player's action for this round. Does NOT resolve yet — that happens
-// only once BOTH players have submitted (or timer expires -> forced "pass").
+// The active player submits ONE action; it validates and resolves immediately,
+// then the turn passes to the opponent. There is no simultaneous batching.
 function submitAction(match, playerId, action) {
   const player = match.players[playerId];
   if (!player) return { ok: false, error: "No such player" };
   if (match.phase !== "battle") return { ok: false, error: "Not in battle" };
-  if (match.pendingActions[player.slot]) {
-    return { ok: false, error: "Action already submitted this round" };
+  if (player.slot !== match.activeSlot) {
+    return { ok: false, error: "Not your turn" };
   }
 
-  // Validate action shape up-front (but do not APPLY it yet).
   const validated = validateAction(match, player, action);
   if (!validated.ok) return validated;
 
-  match.pendingActions[player.slot] = validated.action;
+  // Resolve this single action immediately and advance the turn.
+  const result = resolveAction(match, validated.action);
+  return { ok: true, result };
+}
 
-  const bothSubmitted = match.pendingActions.A && match.pendingActions.B;
-  return { ok: true, bothSubmitted };
+// Advance to the other player's turn (increment round when it returns to first).
+function advanceTurn(match) {
+  match.turn += 1;
+  const next = opponentSlot(match.activeSlot);
+  // A "round" is one turn each; bump round counter when play returns to A-style
+  // start. We simply increment round every two turns for display purposes.
+  if (match.turn % 2 === 1) match.round += 1;
+  match.activeSlot = next;
+}
+
+// Called by the server when the active player's 30s timer expires: they forfeit
+// this turn (no action) and play passes to the opponent immediately.
+function timeoutTurn(match) {
+  if (match.phase !== "battle") return null;
+  const passingSlot = match.activeSlot;
+  advanceTurn(match);
+  return {
+    kind: "pass",
+    slot: passingSlot,
+    reason: "timeout",
+    round: match.round,
+    turn: match.turn,
+    activeSlot: match.activeSlot,
+    phase: match.phase,
+    winner: match.winner,
+  };
 }
 
 // Validate an action against current state. Returns a normalized action.
@@ -256,14 +301,13 @@ function validateAction(match, player, action) {
   }
 
   if (action.action === "reposition") {
+    // Plane gate (authoritative): no repositioning once the plane is destroyed.
+    if (!canReposition(player)) {
+      return { ok: false, error: "Reposition disabled — Transportation Plane destroyed" };
+    }
     const tank = player.tanks.find((t) => t.tankId === action.tankId);
     if (!tank) return { ok: false, error: "No such tank" };
     if (tank.sunk) return { ok: false, error: "Cannot move a sunk tank" };
-
-    // Cooldown: once every REPOSITION_COOLDOWN rounds.
-    if (match.round - tank.lastRepositionRound < REPOSITION_COOLDOWN) {
-      return { ok: false, error: "Tank reposition is on cooldown" };
-    }
 
     const rotation = action.rotation || 0;
     const position = action.position;
@@ -318,107 +362,82 @@ function validateAction(match, player, action) {
 }
 
 // ---------------------------------------------------------------------------
-// SIMULTANEOUS RESOLUTION
+// SINGLE-ACTION RESOLUTION (Phase 2 — one action resolves at a time)
 // ---------------------------------------------------------------------------
-// Order (per spec, critical for correctness):
-//   1) Apply BOTH repositions first (against the board as it was this round).
-//   2) THEN resolve BOTH fire actions against the possibly-updated board.
-// This means a tank that repositioned this round may dodge an incoming shot
-// aimed at its old tile — that is intended behaviour.
-function resolveRound(match) {
-  const actions = match.pendingActions;
-  const result = {
-    round: match.round,
-    repositions: [], // {slot, tankId, tiles}
-    shots: [], // {slot(shooter), target, hit, sunkTankId|null}
-    sunk: [], // {slot(owner), tankId}
-  };
-
-  // Ensure per-player hit sets exist.
+// Resolves the given (already-validated) action immediately, checks for a win,
+// then advances the turn to the opponent. Returns a result describing what
+// happened, broadcast to both clients.
+function resolveAction(match, act) {
   for (const p of Object.values(match.players)) {
     if (!p.hits) p.hits = new Set();
   }
 
-  // --- Step 1: apply repositions ---
-  for (const slot of ["A", "B"]) {
-    const act = actions[slot];
-    if (act && act.action === "reposition") {
-      const player = getPlayerBySlot(match, slot);
-      const tank = player.tanks.find((t) => t.tankId === act.tankId);
-      if (tank && !tank.sunk) {
-        tank.position = act.position;
-        tank.rotation = act.rotation;
-        tank.tiles = computeTiles(tank.footprint, act.rotation, act.position);
-        tank.lastRepositionRound = match.round; // start cooldown
-        result.repositions.push({
-          slot,
-          tankId: tank.tankId,
-          tiles: tank.tiles,
-        });
-      }
+  const result = {
+    round: match.round,
+    turn: match.turn,
+    actorSlot: act.slot,
+    kind: act.action, // "fire" | "reposition" | "pass"
+    reposition: null, // {slot, tankId, tiles}
+    shot: null, // {slot, target, hit, sunkTankId|null}
+    sunk: [], // {slot(owner), tankId}
+    planeDestroyed: null, // slot whose plane was just destroyed, if any
+  };
+
+  if (act.action === "reposition") {
+    const player = getPlayerBySlot(match, act.slot);
+    const tank = player.tanks.find((t) => t.tankId === act.tankId);
+    if (tank && !tank.sunk) {
+      tank.position = act.position;
+      tank.rotation = act.rotation;
+      tank.tiles = computeTiles(tank.footprint, act.rotation, act.position);
+      result.reposition = { slot: act.slot, tankId: tank.tankId, tiles: tank.tiles };
     }
-  }
+  } else if (act.action === "fire") {
+    const target = getPlayerBySlot(match, opponentSlot(act.slot));
+    const key = `${act.target.x},${act.target.y}`;
+    target.hits.add(key); // record for fog-of-war (idempotent)
 
-  // --- Step 2: resolve fire actions against updated board ---
-  for (const slot of ["A", "B"]) {
-    const act = actions[slot];
-    if (act && act.action === "fire") {
-      const shooter = getPlayerBySlot(match, slot);
-      const target = getPlayerBySlot(match, opponentSlot(slot));
-      const key = `${act.target.x},${act.target.y}`;
-
-      // Record the shot on the target's board hit set (idempotent).
-      target.hits.add(key);
-
-      // Find whether a tank tile occupies the target.
-      let hit = false;
-      let sunkTankId = null;
-      for (const tank of target.tanks) {
-        if (tank.sunk) continue;
-        const occupies = tank.tiles.some(
-          (t) => t.x === act.target.x && t.y === act.target.y
-        );
-        if (occupies) {
-          hit = true;
-          // Track this tile as hit on the tank if not already.
-          if (!tank.hitTiles.some((t) => t.x === act.target.x && t.y === act.target.y)) {
-            tank.hitTiles.push({ x: act.target.x, y: act.target.y });
-          }
-          // Sunk when every footprint tile has been hit.
-          if (tank.hitTiles.length >= tank.tiles.length) {
-            tank.sunk = true;
-            sunkTankId = tank.tankId;
-            result.sunk.push({ slot: target.slot, tankId: tank.tankId });
-          }
-          break;
+    let hit = false;
+    let sunkTankId = null;
+    for (const tank of target.tanks) {
+      if (tank.sunk) continue;
+      const occupies = tank.tiles.some(
+        (t) => t.x === act.target.x && t.y === act.target.y
+      );
+      if (occupies) {
+        hit = true;
+        if (!tank.hitTiles.some((t) => t.x === act.target.x && t.y === act.target.y)) {
+          tank.hitTiles.push({ x: act.target.x, y: act.target.y });
         }
+        if (tank.hitTiles.length >= tank.tiles.length) {
+          tank.sunk = true;
+          sunkTankId = tank.tankId;
+          result.sunk.push({ slot: target.slot, tankId: tank.tankId });
+          // Note if this was the Transportation Plane (disables their reposition).
+          if (tank.type === "plane") result.planeDestroyed = target.slot;
+        }
+        break;
       }
-
-      result.shots.push({
-        slot, // who fired
-        target: { x: act.target.x, y: act.target.y },
-        hit,
-        sunkTankId,
-      });
     }
+    result.shot = { slot: act.slot, target: { x: act.target.x, y: act.target.y }, hit, sunkTankId };
   }
+  // "pass" resolves to nothing.
 
   // --- Win check ---
   for (const slot of ["A", "B"]) {
     const player = getPlayerBySlot(match, slot);
-    const allSunk = player.tanks.every((t) => t.sunk);
-    if (allSunk) {
+    if (player.tanks.every((t) => t.sunk)) {
       match.phase = "over";
-      match.winner = opponentSlot(slot); // opponent of the wiped player wins
+      match.winner = opponentSlot(slot);
     }
   }
 
-  // Advance round + clear pending actions for next round.
-  match.pendingActions = {};
-  if (match.phase === "battle") {
-    match.round += 1;
-  }
+  // Advance the turn (unless the match just ended).
+  if (match.phase === "battle") advanceTurn(match);
 
+  result.round = match.round;
+  result.turn = match.turn;
+  result.activeSlot = match.activeSlot;
   result.winner = match.winner;
   result.phase = match.phase;
   return result;
@@ -439,14 +458,13 @@ function buildPlayerView(match, playerId) {
     tankId: t.tankId,
     type: t.type,
     label: t.label,
+    combat: t.combat,
     footprint: t.footprint,
     position: t.position,
     rotation: t.rotation,
     tiles: t.tiles,
     hitTiles: t.hitTiles,
     sunk: t.sunk,
-    onCooldown:
-      match.round - t.lastRepositionRound < REPOSITION_COOLDOWN,
   }));
 
   // Enemy view: fog-of-war. Only reveal a tank's tiles once it is sunk.
@@ -475,6 +493,7 @@ function buildPlayerView(match, playerId) {
     slot: me.slot,
     phase: match.phase,
     round: match.round,
+    turn: match.turn,
     mapId: match.mapId,
     // Server-authoritative map tile data (land/void/hill). null until a map is
     // selected. This is the single source of truth — the client renders from
@@ -489,8 +508,12 @@ function buildPlayerView(match, playerId) {
     oppReady: opp ? opp.ready : false,
     oppConnected: opp ? opp.connected : false,
     winner: match.winner,
-    submitted: !!match.pendingActions[me.slot],
-    oppSubmitted: opp ? !!match.pendingActions[oppSlot] : false,
+    // Alternating-turn state:
+    activeSlot: match.activeSlot,
+    myTurn: match.phase === "battle" && match.activeSlot === me.slot,
+    canReposition: canReposition(me), // false once my plane is destroyed
+    planeAlive: planeAlive(me),
+    oppPlaneAlive: opp ? planeAlive(opp) : true,
   };
 }
 
@@ -500,7 +523,8 @@ function resetMatch(match) {
   match.map = null;
   match.phase = "lobby";
   match.round = 0;
-  match.pendingActions = {};
+  match.turn = 0;
+  match.activeSlot = null;
   match.winner = null;
   for (const p of Object.values(match.players)) {
     p.ready = false;
@@ -511,7 +535,6 @@ function resetMatch(match) {
 
 module.exports = {
   TANK_ROSTER,
-  REPOSITION_COOLDOWN,
   TURN_TIME_MS,
   createMatch,
   addPlayer,
@@ -523,7 +546,10 @@ module.exports = {
   allPlaced,
   setReady,
   submitAction,
-  resolveRound,
+  resolveAction,
+  timeoutTurn,
+  canReposition,
+  planeAlive,
   buildPlayerView,
   resetMatch,
   computeTiles,
