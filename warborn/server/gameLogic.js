@@ -33,6 +33,55 @@ const TANK_ROSTER = [
 
 const TURN_TIME_MS = 30000; // 30 second per-turn timer (single active player)
 
+// ---------------------------------------------------------------------------
+// WEAPONS (Phase 3). A Fire action now selects one of three weapons. Only one
+// action per turn total (fire-with-a-weapon OR reposition). All restrictions
+// are enforced authoritatively in validateAction.
+// ---------------------------------------------------------------------------
+const MISSILE_MAX_USES = 3;
+const BALLISTIC_MAX_USES = 1;
+const BALLISTIC_RAY_LEN = 4; // each of 8 rays extends 4 tiles from center
+
+const WEAPONS = {
+  tank_shoot: { id: "tank_shoot", label: "Tank Shoot" },
+  missile: { id: "missile", label: "Missile" },
+  ballistic: { id: "ballistic", label: "Ballistic Missile" },
+};
+
+// Compute the set of target tiles a weapon hits, centered on {cx,cy}.
+// Returns an array of {x,y}. Callers filter to the enemy zone / map bounds.
+function weaponPattern(weaponId, cx, cy) {
+  if (weaponId === "tank_shoot") {
+    return [{ x: cx, y: cy }];
+  }
+  if (weaponId === "missile") {
+    // Cross within a 3x3: center + 4 orthogonal neighbors (NOT diagonals).
+    return [
+      { x: cx, y: cy },
+      { x: cx, y: cy - 1 },
+      { x: cx, y: cy + 1 },
+      { x: cx - 1, y: cy },
+      { x: cx + 1, y: cy },
+    ];
+  }
+  if (weaponId === "ballistic") {
+    // 8-pointed star: 4 lines (horizontal, vertical, both diagonals) through the
+    // center, each extending BALLISTIC_RAY_LEN tiles in both directions.
+    const tiles = [{ x: cx, y: cy }];
+    const dirs = [
+      [1, 0], [-1, 0], [0, 1], [0, -1],      // horizontal + vertical
+      [1, 1], [-1, -1], [1, -1], [-1, 1],    // both diagonals
+    ];
+    for (const [dx, dy] of dirs) {
+      for (let n = 1; n <= BALLISTIC_RAY_LEN; n++) {
+        tiles.push({ x: cx + dx * n, y: cy + dy * n });
+      }
+    }
+    return tiles;
+  }
+  return [];
+}
+
 // Build the flat list of tank instances a player must place (10 total).
 function buildRosterInstances() {
   const list = [];
@@ -126,6 +175,12 @@ function addPlayer(match, playerId) {
     ready: false,
     connected: true,
     tanks: buildRosterInstances(),
+    // Weapon state — persists across the whole match (not per round):
+    weapons: {
+      missileUses: 0, // Missile fired count (cap 3)
+      missileLastTurn: -10, // turn number of the player's last Missile use
+      ballisticUses: 0, // Ballistic Missile fired count (cap 1)
+    },
   };
   return slot;
 }
@@ -211,6 +266,45 @@ function canReposition(player) {
   return planeAlive(player);
 }
 
+// Any living Heavy Tank? (gates Missile.)
+function heavyAlive(player) {
+  return player.tanks.some((t) => t.type === "heavy" && !t.sunk);
+}
+// Command Tank alive? (gates Ballistic Missile.)
+function commandAlive(player) {
+  return player.tanks.some((t) => t.type === "command" && !t.sunk);
+}
+
+// Compute per-weapon availability + human reason for THIS player at THIS turn.
+// `currentTurn` is match.turn (used for Missile's no-two-in-a-row check).
+// Returns { tank_shoot:{available}, missile:{available, reason, usesLeft},
+//           ballistic:{available, reason, usesLeft} }.
+function weaponStatus(match, player) {
+  const w = player.weapons;
+  const missileLeft = MISSILE_MAX_USES - w.missileUses;
+  const ballisticLeft = BALLISTIC_MAX_USES - w.ballisticUses;
+
+  // Missile gating (all conditions must hold to be available).
+  let missileAvail = true, missileReason = "";
+  if (!heavyAlive(player)) { missileAvail = false; missileReason = "Heavy Tanks destroyed"; }
+  else if (missileLeft <= 0) { missileAvail = false; missileReason = "No uses left"; }
+  else if (match.phase === "battle" && w.missileLastTurn === match.turn - 2) {
+    // Used it on my previous turn (turns alternate, so my prev turn = turn-2).
+    missileAvail = false; missileReason = "Skip a turn (used last turn)";
+  }
+
+  // Ballistic gating.
+  let ballAvail = true, ballReason = "";
+  if (!commandAlive(player)) { ballAvail = false; ballReason = "Command Tank destroyed"; }
+  else if (ballisticLeft <= 0) { ballAvail = false; ballReason = "No uses left"; }
+
+  return {
+    tank_shoot: { available: true, reason: "", usesLeft: Infinity },
+    missile: { available: missileAvail, reason: missileReason, usesLeft: missileLeft },
+    ballistic: { available: ballAvail, reason: ballReason, usesLeft: ballisticLeft },
+  };
+}
+
 // Mark ready; returns true when BOTH players are ready (battle can begin).
 // On battle start, randomly choose which player takes the first turn.
 function setReady(match, playerId) {
@@ -292,11 +386,23 @@ function validateAction(match, player, action) {
     if (typeof x !== "number" || typeof y !== "number") {
       return { ok: false, error: "Fire needs a target tile" };
     }
-    // You may fire anywhere on the enemy grid (misses on void are allowed but
-    // pointless; we still record them as misses for fog-of-war clarity).
+    // Default to Tank Shoot when no weapon is specified (back-compat).
+    const weapon = action.weapon || "tank_shoot";
+    if (!WEAPONS[weapon]) return { ok: false, error: "Unknown weapon" };
+
+    // Authoritative weapon restriction checks (never trust the client).
+    if (weapon !== "tank_shoot") {
+      const status = weaponStatus(match, player);
+      const s = status[weapon];
+      if (!s.available) {
+        const name = WEAPONS[weapon].label;
+        return { ok: false, error: `${name} unavailable: ${s.reason}` };
+      }
+    }
+
     return {
       ok: true,
-      action: { slot: player.slot, action: "fire", target: { x, y } },
+      action: { slot: player.slot, action: "fire", weapon, target: { x, y } },
     };
   }
 
@@ -361,6 +467,28 @@ function validateAction(match, player, action) {
   return { ok: false, error: "Unknown action" };
 }
 
+// Resolve a single tile against a target player's board (binary hit/miss +
+// per-tile sink tracking). Records the shot for fog-of-war, mutates the tank's
+// hitTiles/sunk state, and appends any newly-sunk tank into `result`. Returns
+// { hit }. Shared by all weapons — a splash weapon just calls this per tile.
+function applyHitToTile(match, target, x, y, result) {
+  target.hits.add(`${x},${y}`); // fog-of-war record (idempotent)
+  for (const tank of target.tanks) {
+    if (tank.sunk) continue;
+    if (!tank.tiles.some((t) => t.x === x && t.y === y)) continue;
+    if (!tank.hitTiles.some((t) => t.x === x && t.y === y)) {
+      tank.hitTiles.push({ x, y });
+    }
+    if (tank.hitTiles.length >= tank.tiles.length) {
+      tank.sunk = true;
+      result.sunk.push({ slot: target.slot, tankId: tank.tankId });
+      if (tank.type === "plane") result.planeDestroyed = target.slot;
+    }
+    return { hit: true };
+  }
+  return { hit: false };
+}
+
 // ---------------------------------------------------------------------------
 // SINGLE-ACTION RESOLUTION (Phase 2 — one action resolves at a time)
 // ---------------------------------------------------------------------------
@@ -377,8 +505,10 @@ function resolveAction(match, act) {
     turn: match.turn,
     actorSlot: act.slot,
     kind: act.action, // "fire" | "reposition" | "pass"
+    weapon: act.weapon || null, // which weapon (fire only)
     reposition: null, // {slot, tankId, tiles}
-    shot: null, // {slot, target, hit, sunkTankId|null}
+    center: null, // {x,y} aim point (fire only)
+    impacts: [], // [{x,y,hit}] every tile the weapon resolved against
     sunk: [], // {slot(owner), tankId}
     planeDestroyed: null, // slot whose plane was just destroyed, if any
   };
@@ -393,33 +523,28 @@ function resolveAction(match, act) {
       result.reposition = { slot: act.slot, tankId: tank.tankId, tiles: tank.tiles };
     }
   } else if (act.action === "fire") {
+    const shooter = getPlayerBySlot(match, act.slot);
     const target = getPlayerBySlot(match, opponentSlot(act.slot));
-    const key = `${act.target.x},${act.target.y}`;
-    target.hits.add(key); // record for fog-of-war (idempotent)
+    const zone = zoneForSlot(match, target.slot);
+    result.center = { x: act.target.x, y: act.target.y };
 
-    let hit = false;
-    let sunkTankId = null;
-    for (const tank of target.tanks) {
-      if (tank.sunk) continue;
-      const occupies = tank.tiles.some(
-        (t) => t.x === act.target.x && t.y === act.target.y
-      );
-      if (occupies) {
-        hit = true;
-        if (!tank.hitTiles.some((t) => t.x === act.target.x && t.y === act.target.y)) {
-          tank.hitTiles.push({ x: act.target.x, y: act.target.y });
-        }
-        if (tank.hitTiles.length >= tank.tiles.length) {
-          tank.sunk = true;
-          sunkTankId = tank.tankId;
-          result.sunk.push({ slot: target.slot, tankId: tank.tankId });
-          // Note if this was the Transportation Plane (disables their reposition).
-          if (tank.type === "plane") result.planeDestroyed = target.slot;
-        }
-        break;
-      }
+    // Update weapon-use bookkeeping (persists across the match).
+    if (act.weapon === "missile") {
+      shooter.weapons.missileUses += 1;
+      shooter.weapons.missileLastTurn = match.turn;
+    } else if (act.weapon === "ballistic") {
+      shooter.weapons.ballisticUses += 1;
     }
-    result.shot = { slot: act.slot, target: { x: act.target.x, y: act.target.y }, hit, sunkTankId };
+
+    // Compute every tile the weapon pattern touches, then resolve each one
+    // independently. Tiles outside the enemy zone or off the map are skipped.
+    const pattern = weaponPattern(act.weapon || "tank_shoot", act.target.x, act.target.y);
+    for (const tl of pattern) {
+      if (tl.x < 0 || tl.y < 0 || tl.x >= (match.map.grid[0].length) || tl.y >= match.map.grid.length) continue;
+      if (!inZone(zone, tl.x, tl.y)) continue; // no effect outside enemy zone
+      const outcome = applyHitToTile(match, target, tl.x, tl.y, result);
+      result.impacts.push({ x: tl.x, y: tl.y, hit: outcome.hit });
+    }
   }
   // "pass" resolves to nothing.
 
@@ -514,6 +639,8 @@ function buildPlayerView(match, playerId) {
     canReposition: canReposition(me), // false once my plane is destroyed
     planeAlive: planeAlive(me),
     oppPlaneAlive: opp ? planeAlive(opp) : true,
+    // Per-weapon availability + reasons for the weapon-select UI.
+    weapons: weaponStatus(match, me),
   };
 }
 
@@ -530,12 +657,18 @@ function resetMatch(match) {
     p.ready = false;
     p.tanks = buildRosterInstances();
     p.hits = new Set();
+    p.weapons = { missileUses: 0, missileLastTurn: -10, ballisticUses: 0 };
   }
 }
 
 module.exports = {
   TANK_ROSTER,
   TURN_TIME_MS,
+  WEAPONS,
+  weaponPattern,
+  weaponStatus,
+  heavyAlive,
+  commandAlive,
   createMatch,
   addPlayer,
   getPlayerBySlot,

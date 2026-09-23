@@ -197,7 +197,9 @@
     <!-- Bottom action bar -->
     <div id="actionbar" class="panel hidden">
       <span id="hint"></span>
-      <button id="fireBtn" class="hidden">Fire</button>
+      <button id="wpnTankBtn" class="hidden">Tank Shoot</button>
+      <button id="wpnMissileBtn" class="hidden">Missile</button>
+      <button id="wpnBallisticBtn" class="hidden">Ballistic Missile</button>
       <button id="repoBtn" class="secondary hidden">Reposition</button>
       <button id="rotateActionBtn" class="secondary hidden">Rotate</button>
       <button id="confirmBtn" class="hidden">Confirm</button>
@@ -257,6 +259,7 @@
     repoRotation: 0,
     repoDest: null,       // {x,y} chosen reposition destination (pending confirm)
     fireTarget: null,     // {x,y} chosen fire tile (pending tap-then-confirm)
+    weapon: "tank_shoot", // selected weapon when in fire mode
 
     // timer
     timerInterval: null,
@@ -553,15 +556,27 @@
   $("rotateActionBtn").addEventListener("pointerup", doRotate);
 
   // ---- Battle action bar ----------------------------------------------------
-  // Flow (touch-safe): pick Fire or Reposition -> tap a tile to SELECT it (shown
-  // as a ghost, not fired) -> tap Confirm to submit. Prevents accidental misfires.
-  $("fireBtn").addEventListener("pointerup", () => {
+  // Flow (touch-safe): pick a WEAPON (or Reposition) -> tap a tile to aim (ghost,
+  // not fired) -> tap Confirm to submit. Prevents accidental misfires.
+  const WEAPON_LABELS = { tank_shoot: "Tank Shoot", missile: "Missile", ballistic: "Ballistic Missile" };
+
+  function enterFireMode(weapon) {
+    const st = G.view && G.view.weapons && G.view.weapons[weapon];
+    if (st && !st.available) {
+      toast(`${WEAPON_LABELS[weapon]} unavailable: ${st.reason}`);
+      return;
+    }
     G.mode = "fire";
+    G.weapon = weapon;
     G.repoTankId = null; G.repoDest = null; G.fireTarget = null;
     clearGhost();
     updateBattleBar();
-    toast("Tap an enemy tile to aim, then Confirm.");
-  });
+    toast(`${WEAPON_LABELS[weapon]}: tap an enemy tile to aim, then Confirm.`);
+  }
+  $("wpnTankBtn").addEventListener("pointerup", () => enterFireMode("tank_shoot"));
+  $("wpnMissileBtn").addEventListener("pointerup", () => enterFireMode("missile"));
+  $("wpnBallisticBtn").addEventListener("pointerup", () => enterFireMode("ballistic"));
+
   $("repoBtn").addEventListener("pointerup", () => {
     // Guard: no reposition once the Transportation Plane is destroyed.
     if (G.view && !G.view.canReposition) {
@@ -585,10 +600,10 @@
     clearGhost();
   }
 
-  // Submit whatever the player has staged (fire target or reposition dest).
+  // Submit whatever the player has staged (fire target + weapon, or reposition).
   function submitSelectedAction() {
     if (G.mode === "fire" && G.fireTarget) {
-      sendMsg({ type: "submit_action", action: "fire", target: G.fireTarget });
+      sendMsg({ type: "submit_action", action: "fire", weapon: G.weapon, target: G.fireTarget });
     } else if (G.mode === "reposition" && G.repoTankId && G.repoDest) {
       sendMsg({
         type: "submit_action", action: "reposition",
@@ -604,45 +619,55 @@
     const anySel = (G.mode === "fire" && G.fireTarget) ||
                    (G.mode === "reposition" && G.repoTankId && G.repoDest);
 
+    const weaponBtns = ["wpnTankBtn","wpnMissileBtn","wpnBallisticBtn"];
+
     // Not your turn: hide all action controls; the wait overlay handles messaging.
     if (!v.myTurn) {
-      ["fireBtn","repoBtn","cancelActionBtn","rotateActionBtn","confirmBtn"].forEach(hide);
+      [...weaponBtns, "repoBtn","cancelActionBtn","rotateActionBtn","confirmBtn"].forEach(hide);
       $("hint").textContent = "Opponent is taking their turn...";
       return;
     }
 
-    show("fireBtn");
-    // Reposition is gated on the Transportation Plane being alive (authoritative
-    // server-side too). Disable + explain once the plane is destroyed.
+    // Show the three weapon buttons, each gated by server-provided availability.
+    const wstat = v.weapons || {};
+    const wpnMap = { wpnTankBtn: "tank_shoot", wpnMissileBtn: "missile", wpnBallisticBtn: "ballistic" };
+    for (const btnId of weaponBtns) {
+      const wid = wpnMap[btnId];
+      const st = wstat[wid] || { available: true, reason: "", usesLeft: Infinity };
+      const btn = $(btnId);
+      show(btnId);
+      btn.disabled = !st.available;
+      // Explain WHY unavailable (grey out + tooltip) rather than hiding it.
+      let label = WEAPON_LABELS[wid];
+      if (wid === "missile") label += ` (${Math.max(0, st.usesLeft)})`;
+      else if (wid === "ballistic") label += ` (${Math.max(0, st.usesLeft)})`;
+      btn.textContent = label;
+      btn.title = st.available ? "" : `${WEAPON_LABELS[wid]}: ${st.reason}`;
+      btn.classList.toggle("secondary", !(G.mode === "fire" && G.weapon === wid));
+    }
+
+    // Reposition is gated on the Transportation Plane being alive.
     const repoBtn = $("repoBtn");
     show("repoBtn");
-    if (!v.canReposition) {
-      repoBtn.disabled = true;
-      repoBtn.title = "Reposition disabled — your Transportation Plane was destroyed.";
-    } else {
-      repoBtn.disabled = false;
-      repoBtn.title = "";
-    }
+    repoBtn.disabled = !v.canReposition;
+    repoBtn.title = v.canReposition ? "" : "Reposition disabled — your Transportation Plane was destroyed.";
+    repoBtn.classList.toggle("secondary", G.mode !== "reposition");
 
     G.mode ? show("cancelActionBtn") : hide("cancelActionBtn");
     (G.mode === "reposition" && G.repoTankId) ? show("rotateActionBtn") : hide("rotateActionBtn");
     anySel ? show("confirmBtn") : hide("confirmBtn");
 
-    $("fireBtn").classList.toggle("secondary", G.mode !== "fire");
-    $("repoBtn").classList.toggle("secondary", G.mode !== "reposition");
-
     if (G.mode === "fire") {
+      const wl = WEAPON_LABELS[G.weapon];
       $("hint").textContent = G.fireTarget
-        ? `Aiming at (${G.fireTarget.x}, ${G.fireTarget.y}). Tap Confirm to fire.`
-        : "FIRE: tap a tile in the ENEMY zone to aim.";
+        ? `${wl} aimed at (${G.fireTarget.x}, ${G.fireTarget.y}). Tap Confirm to fire.`
+        : `${wl}: tap a tile in the ENEMY zone to aim.`;
     } else if (G.mode === "reposition") {
       if (!G.repoTankId) $("hint").textContent = "Tap one of your tanks to move.";
       else if (!G.repoDest) $("hint").textContent = "Tap a destination tile in your zone. Rotate to turn.";
       else $("hint").textContent = "Destination set. Tap Confirm to move.";
     } else {
-      $("hint").textContent = v.canReposition
-        ? "Your turn — choose Fire or Reposition."
-        : "Your turn — Fire. (Reposition disabled: plane destroyed.)";
+      $("hint").textContent = "Your turn — pick a weapon or Reposition.";
     }
   }
 
@@ -677,19 +702,47 @@
     hide("timer");
   }
 
+  // Briefly flash a weapon's impact tiles so the pattern is readable when it
+  // lands (color/shape differs per weapon: shot=red dot, missile=orange cross,
+  // ballistic=yellow star). Purely visual; cleared after a moment.
+  function flashImpacts(result) {
+    if (result.kind !== "fire" || !result.impacts || !scene) return;
+    const colorByWeapon = { tank_shoot: 0xff3b30, missile: 0xff8c1a, ballistic: 0xffe23a };
+    const color = colorByWeapon[result.weapon] || 0xffffff;
+    const flashGroup = new THREE.Group();
+    for (const im of result.impacts) {
+      const geo = new THREE.SphereGeometry(im.hit ? 0.36 : 0.2, 10, 10);
+      const mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.6 });
+      const mesh = new THREE.Mesh(geo, mat);
+      const wc = tileToWorld(im.x, im.y);
+      mesh.position.set(wc.x, 0.8, wc.z);
+      flashGroup.add(mesh);
+    }
+    scene.add(flashGroup);
+    setTimeout(() => {
+      flashGroup.children.forEach((c) => { c.geometry.dispose(); c.material.dispose(); });
+      scene.remove(flashGroup);
+    }, 1400);
+  }
+
   // ---- Single-action result feedback ---------------------------------------
   function applyActionResult(result) {
     // Reset my local staging for the next time it's my turn.
     resetActionSelection();
+    flashImpacts(result);
 
     const iActed = result.actorSlot === G.slot;
-    if (result.kind === "fire" && result.shot) {
+    if (result.kind === "fire") {
+      const impacts = result.impacts || [];
+      const hits = impacts.filter((i) => i.hit).length;
+      const sunkCount = (result.sunk || []).length;
+      const wl = WEAPON_LABELS[result.weapon] || "Fire";
       if (iActed) {
-        if (result.shot.sunkTankId) toast("Direct hit — enemy unit SUNK!");
-        else if (result.shot.hit) toast("Hit!");
-        else toast("Miss.");
-      } else if (result.shot.hit) {
-        toast(result.shot.sunkTankId ? "One of your units was sunk!" : "You were hit!");
+        if (sunkCount > 0) toast(`${wl}: ${hits} hit(s), ${sunkCount} unit(s) SUNK!`);
+        else if (hits > 0) toast(`${wl}: ${hits} hit(s)!`);
+        else toast(`${wl}: all misses.`);
+      } else if (hits > 0) {
+        toast(sunkCount > 0 ? `Enemy ${wl} sank ${sunkCount} of your units!` : `Enemy ${wl} hit you (${hits})!`);
       }
     } else if (result.kind === "pass") {
       toast(iActed ? "You ran out of time — turn passed." : "Opponent's turn timed out.");
@@ -1023,15 +1076,44 @@
     ghostGroup.add(mesh);
   }
 
-  // A small marker showing the currently-aimed fire target (before Confirm).
+  // Mirror of the server's weapon patterns for AIM PREVIEW only (server is
+  // authoritative for actual resolution). Returns [{x,y}] centered on cx,cy.
+  const BALLISTIC_RAY_LEN = 4;
+  function clientWeaponPattern(weapon, cx, cy) {
+    if (weapon === "missile") {
+      return [{x:cx,y:cy},{x:cx,y:cy-1},{x:cx,y:cy+1},{x:cx-1,y:cy},{x:cx+1,y:cy}];
+    }
+    if (weapon === "ballistic") {
+      const tiles = [{x:cx,y:cy}];
+      const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]];
+      for (const [dx,dy] of dirs)
+        for (let n=1;n<=BALLISTIC_RAY_LEN;n++) tiles.push({x:cx+dx*n,y:cy+dy*n});
+      return tiles;
+    }
+    return [{x:cx,y:cy}];
+  }
+
+  // Show the aimed fire target as a ring at the center + faint markers on every
+  // tile the selected weapon's pattern will resolve against (within enemy zone).
   function drawAimGhost(tile) {
-    const geo = new THREE.TorusGeometry(0.4, 0.09, 8, 20);
-    const mat = new THREE.MeshStandardMaterial({ color: 0xffd166, emissive: 0x4a3a00 });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.rotation.x = Math.PI / 2;
-    const wc = tileToWorld(tile.x, tile.y);
-    mesh.position.set(wc.x, 0.6, wc.z);
-    ghostGroup.add(mesh);
+    const weapon = G.weapon || "tank_shoot";
+    const ez = G.view && G.view.enemyZone;
+    const pattern = clientWeaponPattern(weapon, tile.x, tile.y);
+    for (const p of pattern) {
+      if (ez && !inZone(ez, p.x, p.y)) continue; // only tiles that can take effect
+      const isCenter = p.x === tile.x && p.y === tile.y;
+      const geo = isCenter
+        ? new THREE.TorusGeometry(0.42, 0.1, 8, 20)
+        : new THREE.BoxGeometry(0.8, 0.12, 0.8);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xffd166, emissive: 0x4a3a00, transparent: !isCenter, opacity: isCenter ? 1 : 0.55,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      if (isCenter) mesh.rotation.x = Math.PI / 2;
+      const wc = tileToWorld(p.x, p.y);
+      mesh.position.set(wc.x, isCenter ? 0.6 : 0.35, wc.z);
+      ghostGroup.add(mesh);
+    }
   }
 
   // Hover preview (mouse only — touch has no hover, so this is a nicety).
@@ -1133,12 +1215,12 @@
     if (!v.myTurn) return; // can only act on your own turn
 
     if (G.mode === "fire") {
-      if (picked.side !== "enemy") { toast("Aim on the ENEMY grid (right)."); return; }
+      if (picked.side !== "enemy") { toast("Aim inside the ENEMY zone (red)."); return; }
       G.fireTarget = { x: picked.x, y: picked.y };
       clearGhost(); drawAimGhost(G.fireTarget);
       updateBattleBar();
     } else if (G.mode === "reposition") {
-      if (picked.side !== "mine") { toast("Reposition within YOUR grid (left)."); return; }
+      if (picked.side !== "mine") { toast("Reposition within YOUR zone (blue)."); return; }
       if (!G.repoTankId) {
         const tank = v.myTanks.find((t) =>
           t.tiles && t.tiles.some((tl) => tl.x === picked.x && tl.y === picked.y));

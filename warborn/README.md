@@ -35,6 +35,11 @@ Open http://localhost:3000 in two browser tabs (or two machines). In tab 1 click
 - Roster (10 units): 1 Command Tank, 2 Heavy, 3 Medium, 3 Light, and 1 **Transportation Plane** (1x4, non-combat — it can't fire but is placeable/targetable/sinkable).
 - Turns are **strict alternating** (Phase 2). A random player goes first, then players take turns one at a time. On your turn you pick ONE action (Fire, or Reposition if your plane is alive) and it resolves immediately. A 30s timer runs on the active player's turn only; if it expires you forfeit that turn and play passes to the opponent. The HUD shows whose turn it is.
 - **Transportation Plane gating**: you may only Reposition while your plane is alive. Once your plane is fully sunk, Reposition is permanently disabled (Fire remains). Enforced server-side.
+- **Weapons** (Fire picks one of three, all resolve instantly, all server-authoritative):
+  - **Tank Shoot** — baseline, always available, unlimited. Hits 1 tile.
+  - **Missile** — requires a living Heavy Tank; 3 uses per game; can't be used two of your turns in a row. Hits a 5-tile cross (center + 4 orthogonal neighbours, no diagonals).
+  - **Ballistic Missile** — requires a living Command Tank; 1 use per game. Hits an 8-pointed star: 4 lines through the center (horizontal, vertical, both diagonals), each extending 4 tiles out in both directions (33 tiles max).
+  - Splash tiles outside the enemy zone or off-map are skipped. Each affected tile resolves as an independent hit/miss. Unavailable weapons are greyed out in the UI with the reason shown.
 - Battle is shown on ONE unified map (same landmass as deploy): your units are fully visible in your zone, the enemy zone is fog-of-war in its real position (only hit/miss markers on tiles you've fired at; sunk enemy units are revealed). Tap an enemy-zone tile to aim, then Confirm to fire.
 - A unit sinks when all its footprint tiles are hit. Wipe out all 10 enemy units to win.
 
