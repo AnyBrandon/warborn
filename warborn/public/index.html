@@ -813,7 +813,10 @@
     const battle = v.phase === "battle";
 
     // --- My board (left) ---
-    buildBoardTiles(grid, "mine", v.myZone, true);
+    // During deploy, also tint the opponent's zone on this same board so both
+    // zones read as distinct, non-overlapping regions (opponent's is not
+    // clickable — handleDeployTap only accepts tiles inside v.myZone).
+    buildBoardTiles(grid, "mine", v.myZone, true, battle ? null : v.enemyZone);
     // Place my tanks (fully visible to me).
     v.myTanks.forEach((t) => {
       if (t.tiles && t.tiles.length) addTankMesh(t, "mine");
@@ -846,7 +849,11 @@
     }
   }
 
-  function buildBoardTiles(grid, side, zone, isMine) {
+  // `zone` is the primary zone tinted for this board (mine on the "mine" board,
+  // enemy on the "enemy" board). `otherZone` is an optional secondary zone tinted
+  // with COL_ZONE_ENEMY — used during deploy so the opponent's zone is visibly
+  // distinct from neutral land on the player's own single board (purely visual).
+  function buildBoardTiles(grid, side, zone, isMine, otherZone) {
     const geo = new THREE.BoxGeometry(0.96, 0.2, 0.96);
     for (let y = 0; y < GRID_H; y++) {
       for (let x = 0; x < GRID_W; x++) {
@@ -858,6 +865,9 @@
         // Tint deployment zone tiles that are playable.
         if (t !== 0 && inZone(zone, x, y)) {
           color = isMine ? COL_ZONE_MINE : COL_ZONE_ENEMY;
+        } else if (t !== 0 && otherZone && inZone(otherZone, x, y)) {
+          // Opponent's zone shown on my own board (deploy) — non-interactive tint.
+          color = COL_ZONE_ENEMY;
         }
 
         const mat = new THREE.MeshStandardMaterial({ color });
