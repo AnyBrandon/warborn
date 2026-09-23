@@ -85,8 +85,9 @@ ok(view.enemyShots !== undefined && view.enemySunkTanks !== undefined, "enemy vi
 ok(view.myTanks.length === 10, "own tanks fully visible (10)");
 
 // --- Server-authoritative grid is included in the view ---
-ok(Array.isArray(view.grid) && view.grid.length === 30 && view.grid[0].length === 30,
-   "view includes 30x30 server-authoritative grid");
+const maps = require("./maps");
+ok(Array.isArray(view.grid) && view.grid.length === maps.GRID_H && view.grid[0].length === maps.GRID_W,
+   `view includes ${maps.GRID_W}x${maps.GRID_H} server-authoritative grid`);
 ok(view.grid === m.map.grid, "view grid is the map's actual tile data");
 const lobbyView = (() => { const mm = gl.createMatch("L"); gl.addPlayer(mm, "x"); return gl.buildPlayerView(mm, "x"); })();
 ok(lobbyView.grid === null, "grid is null before a map is selected");

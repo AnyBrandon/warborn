@@ -8,7 +8,10 @@ Tank-themed real-time multiplayer strategy game (Battleship-inspired). Phase 1 d
 /server
   server.js      Express static host + ws WebSocket server (one process, one port)
   gameLogic.js   Authoritative game state & rules engine
-  maps.js        3 preset map templates + deployment zones
+  maps.js        Assembles the 4 preset templates from baked data + zones
+  mapData.js     BAKED static tile arrays (generated — do not hand-edit)
+  mapgen/
+    generate.js  Offline noise-based map generator (not used at runtime)
   test.js        Engine sanity checks (node server/test.js)
 /public
   index.html     Single self-contained client (Three.js via CDN)
@@ -57,3 +60,30 @@ Works in-browser on desktop, tablet, and phones — no native app.
 - No secrets or other env vars are required for Phase 1.
 
 Note: the free tier sleeps after inactivity; the first request after idle may take ~30s to spin up. WebSocket upgrades share the same HTTP port, so no extra networking config is needed.
+
+## Maps
+
+The board is a **70x60** tile grid. There are four preset templates with organic, noise-generated coastlines (bays, peninsulas, inlets, islands):
+
+- **The Isthmus** — two major landmasses joined by a narrow land bridge chokepoint.
+- **Archipelago** — several distinct disconnected islands.
+- **Highland Basin** — one large continuous landmass with a ring of hills around a lower central plain.
+- **Squid** — a single irregular, multi-lobed continent with jagged bays and tentacle-like inlets, an enclosed inland lake, and winding river-like hill lines. Deployment zones sit in the northern and southern lobes with a wide neutral hilly middle.
+
+Each map defines two deployment zones (one per player) in separate regions of contiguous land with a neutral buffer between them.
+
+### Regenerating maps
+
+Tile data is baked (deterministic, no runtime randomness). To change or regenerate maps:
+
+```
+node server/mapgen/generate.js --ascii    # visually inspect
+node server/mapgen/generate.js --stats     # land/hill/void counts
+node server/mapgen/generate.js --write      # (re)write server/mapData.js
+```
+
+The generator uses seeded value-noise + per-template shaping masks, keeps the largest connected land component(s), and adds hills via a second noise pass. Seeds are fixed per template so output is deterministic.
+
+### Grid size sync
+
+`GRID_W`/`GRID_H` must stay in sync between `server/mapData.js` (source of truth, consumed by `maps.js`) and the client constant in `public/index.html` (search for `must match server`). The client camera framing auto-fits to the grid/zone size, so no manual zoom tuning is needed when the grid changes.

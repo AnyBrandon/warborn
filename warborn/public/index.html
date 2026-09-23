@@ -263,7 +263,7 @@
     turnDeadline: 0,
   };
 
-  const GRID_W = 30, GRID_H = 30; // must match server maps.js
+  const GRID_W = 70, GRID_H = 60; // must match server maps.js / mapData.js
   const TILE = 1;                 // world units per tile
 
   // ---- DOM helpers ---------------------------------------------------------
@@ -728,8 +728,10 @@
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.maxPolarAngle = Math.PI / 2.1;
-    controls.minDistance = 8;
-    controls.maxDistance = 90;
+    // Zoom range scaled for the larger 70x60 grid: close enough to target a
+    // single tile, far enough to see both full boards during battle.
+    controls.minDistance = 10;
+    controls.maxDistance = 220;
     // Explicit touch gestures: one finger orbits, two fingers pinch-zoom + pan.
     // This coexists with our tap-vs-drag detection (small moves = tile taps).
     controls.touches = {
@@ -937,20 +939,32 @@
     if (battle === G._framedFor) return; // already framed for this phase
     G._framedFor = battle;
 
+    // Fit the camera to a region of the given world-space width/height. Derives
+    // distance from the region size + camera FOV so the whole area is visible on
+    // first load (important now that the grid is 70x60, not 30x30).
+    function fitTo(targetX, targetZ, spanX, spanZ) {
+      const fov = (camera.fov * Math.PI) / 180;
+      const aspect = camera.aspect || 1;
+      // Half-extents we must fit vertically (account for the tilt by padding).
+      const half = Math.max(spanZ / 2, (spanX / 2) / aspect);
+      const dist = (half / Math.tan(fov / 2)) * 1.5 + 8; // 1.5 = comfortable margin
+      controls.target.set(targetX, 0, targetZ);
+      // Tilted overhead view: pull back and up along +z.
+      camera.position.set(targetX, dist * 0.85, targetZ + dist * 0.6);
+    }
+
     if (battle) {
-      // Look across both boards, biased toward the enemy board (where you fire).
-      controls.target.set(ENEMY_OFFSET_X / 2, 0, 0);
-      camera.position.set(ENEMY_OFFSET_X / 2, 34, 26);
+      // Look across both boards (mine + enemy) which span ~2*GRID_W + gap wide.
+      const spanX = ENEMY_OFFSET_X + GRID_W;
+      fitTo(ENEMY_OFFSET_X / 2, 0, spanX, GRID_H);
     } else {
-      // Deploy: center the camera on THIS player's own zone so they're always
-      // looking at their placement area (A's zone and B's zone differ).
+      // Deploy: frame THIS player's own zone (A's and B's differ). Pad a little
+      // so surrounding coastline is visible for tactical context.
       const z = G.view && G.view.myZone ? G.view.myZone : { x: 0, y: 0, w: GRID_W, h: GRID_H };
       const cx = z.x + z.w / 2 - 0.5;
       const cy = z.y + z.h / 2 - 0.5;
       const wc = tileToWorld(cx, cy, "mine");
-      controls.target.set(wc.x, 0, wc.z);
-      // Position the camera "behind" the zone (offset in +z) looking at it.
-      camera.position.set(wc.x, 24, wc.z + 16);
+      fitTo(wc.x, wc.z, z.w + 12, z.h + 12);
     }
     controls.update();
   }
