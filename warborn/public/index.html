@@ -30,6 +30,9 @@
   .center-screen {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     background: rgba(6,10,20,0.85); padding: 16px;
+    /* #ui disables pointer events; full-screen modal overlays must re-enable
+       them so their inputs/buttons are clickable and focusable. */
+    pointer-events: auto;
   }
   .card {
     background: #131c2e; border: 1px solid #2a3852; border-radius: 12px;
@@ -993,6 +996,9 @@
   let downPt = null;
   const TAP_SLOP = 10; // px of movement still considered a tap
   function onPointerDown(e) {
+    // Only track interactions that start on the 3D canvas itself. Guards against
+    // ever treating a press on an HTML overlay control as the start of a tile tap.
+    if (e.target !== renderer.domElement) { downPt = null; return; }
     downPt = { x: e.clientX, y: e.clientY, id: e.pointerId };
   }
   function onPointerUp(e) {
