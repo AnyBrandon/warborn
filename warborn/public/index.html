@@ -150,6 +150,7 @@
       <span class="tag">WARBORN</span>
       <span id="roomtag" class="badge"></span>
       <span id="slottag" class="badge"></span>
+      <span id="zonetag" class="badge"></span>
       <span class="spacer"></span>
       <span id="round" class="hidden"></span>
       <span id="timer" class="hidden">30</span>
@@ -280,18 +281,27 @@
   }
 
   // ---- WebSocket -----------------------------------------------------------
+  // `intentionalSession` is only set true AFTER this tab has actively joined a
+  // room in this page load. We ONLY auto-reconnect for a drop during that live
+  // session — never on a fresh page load using a stale saved session. This
+  // prevents two browsers (or a reloaded/duplicated tab) from silently
+  // rebinding to an old room/slot and ending up sharing one identity/zone.
+  let intentionalSession = false;
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     G.ws = new WebSocket(`${proto}://${location.host}`);
     G.ws.onopen = () => {
-      // Attempt reconnect if we have stored session info.
-      const saved = loadSession();
-      if (saved && saved.roomCode && saved.playerId) {
-        sendMsg({ type: "reconnect", roomCode: saved.roomCode, playerId: saved.playerId });
+      // Reconnect ONLY if we dropped mid-session in this same tab.
+      if (intentionalSession && G.roomCode && G.playerId) {
+        sendMsg({ type: "reconnect", roomCode: G.roomCode, playerId: G.playerId });
       }
     };
     G.ws.onmessage = (ev) => handleServerMsg(JSON.parse(ev.data));
-    G.ws.onclose = () => toast("Disconnected from server");
+    G.ws.onclose = () => {
+      toast("Disconnected — reconnecting...");
+      // Try to re-establish the socket if we were in a live session.
+      if (intentionalSession) setTimeout(connect, 1500);
+    };
   }
 
   function sendMsg(obj) {
@@ -300,17 +310,13 @@
     }
   }
 
-  function saveSession() {
-    try {
-      sessionStorage.setItem("warborn", JSON.stringify({ roomCode: G.roomCode, playerId: G.playerId }));
-    } catch {}
-  }
-  function loadSession() {
-    try { return JSON.parse(sessionStorage.getItem("warborn")); } catch { return null; }
-  }
-  function clearSession() {
-    try { sessionStorage.removeItem("warborn"); } catch {}
-  }
+  // Session identity lives ONLY in memory (G.roomCode / G.playerId), which is
+  // per-tab and never copied to a duplicated tab. We intentionally do NOT
+  // persist it to sessionStorage/localStorage: that was the vector letting a
+  // duplicated tab (or reloaded browser) silently rebind to another player's
+  // slot, which manifested as "both players on the same zone."
+  function saveSession() { /* no-op: identity kept in-memory only */ }
+  function clearSession() { G.roomCode = null; G.playerId = null; intentionalSession = false; }
 
   // ---- Server message router -----------------------------------------------
   function handleServerMsg(msg) {
@@ -363,6 +369,8 @@
   };
 
   function onJoined(reconnected) {
+    // This tab now owns a live session; enable mid-session reconnect only.
+    intentionalSession = true;
     hide("lobby");
     show("hud");
     $("roomtag").textContent = "ROOM " + G.roomCode;
@@ -460,6 +468,13 @@
 
   function updateHud() {
     const v = G.view;
+    // Diagnostic: surface the slot + actual received zone so a screenshot alone
+    // reveals whether two browsers are wrongly sharing the same slot/zone.
+    if (v.myZone) {
+      $("zonetag").textContent = `zone ${v.myZone.x},${v.myZone.y}`;
+    } else {
+      $("zonetag").textContent = "";
+    }
     if (v.phase === "battle") {
       show("round"); $("round").textContent = "ROUND " + v.round;
     } else {
