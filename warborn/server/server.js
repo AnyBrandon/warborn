@@ -215,9 +215,18 @@ function onReconnect(socket, msg) {
   const { roomCode, playerId } = msg;
   const match = rooms.get(roomCode);
   if (!match || !match.players[playerId]) {
-    return sendError(socket, "Cannot reconnect: match gone");
+    // Stale session (match ended, or never existed here). Tell the client to
+    // clear its saved session and return to the lobby to join fresh.
+    return send(socket, { type: "reconnect_failed" });
   }
   const player = match.players[playerId];
+  // Guard against a DUPLICATED TAB (sessionStorage is copied into the new tab)
+  // reconnecting with the SAME playerId as a still-connected socket. Without
+  // this, both tabs would share one slot/zone — which looked like "both players
+  // deploying on the same zone." Reject the hijack; the new tab must join fresh.
+  if (player.connected && playerSockets.has(playerId)) {
+    return send(socket, { type: "reconnect_failed", reason: "already_active" });
+  }
   player.connected = true;
   if (match.disconnectTimers && match.disconnectTimers[playerId]) {
     clearTimeout(match.disconnectTimers[playerId]);

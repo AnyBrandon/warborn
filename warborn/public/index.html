@@ -340,6 +340,14 @@
       case "opponent_presence":
         onOpponentPresence(msg.connected);
         break;
+      case "reconnect_failed":
+        // Saved session is stale or this is a duplicated tab already active
+        // elsewhere. Drop the session so this tab acts as a brand-new player.
+        clearSession();
+        if (msg.reason === "already_active") {
+          toast("This session is already open in another tab. Join as a new player.");
+        }
+        break;
       case "error":
         toast(msg.error);
         break;
