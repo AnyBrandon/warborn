@@ -112,6 +112,10 @@
     background: #14243a; border: 1px solid #2a3852; letter-spacing: 1px;
     font-family: 'Consolas', ui-monospace, 'Courier New', monospace;
   }
+  /* Passive "opponent's turn" HUD badge gently pulses so it's noticeable without
+     blocking the map (replaces the old full-screen waiting modal). */
+  #zonetag.waiting { animation: turnPulse 1.4s ease-in-out infinite; }
+  @keyframes turnPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
   /* Action bar gets a tactical panel look with a top hairline. */
   #actionbar { border-top: 1px solid #21344d; backdrop-filter: blur(2px); }
   #actionbar button, #tray button { border-radius: 5px; letter-spacing: .5px; }
@@ -606,12 +610,11 @@
       buildScene();
       updateBattleBar();
       manageTimer();
-      // Alternating turns: only run the timer / show controls on YOUR turn.
-      if (!v.myTurn) {
-        showWait("Opponent's turn — waiting...");
-      } else {
-        hideWait();
-      }
+      // Alternating turns: controls are disabled on the opponent's turn (handled
+      // in updateBattleBar), and whose-turn is shown as a passive HUD label — we
+      // no longer put up a full-screen blocking overlay, so the map stays fully
+      // visible. hideWait() clears any leftover overlay (e.g. disconnect pause).
+      hideWait();
     } else if (v.phase === "over") {
       // game_over message handles the screen
       stopTimer();
@@ -635,9 +638,10 @@
   function updateHud() {
     const v = G.view;
     if (v.phase === "battle") {
-      // Whose turn is it? Make it clearly visible.
-      $("zonetag").textContent = v.myTurn ? "YOUR TURN" : "OPPONENT'S TURN";
+      // Whose turn is it? Passive HUD label (replaces the old full-screen modal).
+      $("zonetag").textContent = v.myTurn ? "● YOUR TURN" : "○ OPPONENT'S TURN";
       $("zonetag").style.color = v.myTurn ? "#4ade80" : "#ff9f6b";
+      $("zonetag").classList.toggle("waiting", !v.myTurn);
       show("round"); $("round").textContent = "ROUND " + v.round;
       // Double-shot perk indicator (active until Command Tank first hit).
       if (v.doubleShot) { show("perktag"); $("perktag").style.color = "#facc15"; }
@@ -1130,9 +1134,14 @@
   function applyActionResult(result) {
     // Reset my local staging for the next time it's my turn.
     resetActionSelection();
-    flashImpacts(result);
 
     const iActed = result.actorSlot === G.slot;
+    // For the TARGET of a Ballistic Missile, the impact visual is DEFERRED (see
+    // the ballistic branch) so it plays after their warning popup closes — the
+    // shot already resolved server-side; only the visual is delayed. Every other
+    // case plays the impact visual immediately here.
+    const deferImpact = result.kind === "fire" && result.weapon === "ballistic" && !iActed;
+    if (!deferImpact) flashImpacts(result);
     if (result.kind === "fire") {
       const impacts = result.impacts || [];
       const hits = impacts.filter((i) => i.hit).length;
@@ -1147,11 +1156,19 @@
       }
       // BALLISTIC MISSILE cinematics (presentational; does not block resolution).
       if (result.weapon === "ballistic") {
-        if (iActed) playCineVideo("assets/videos/ballisticMissileLaunch_1.mp4");
-        else showTimedPopup("ballisticWarn", 3800);
-        // Intensify impact drama with a camera shake (the impact effect itself
-        // is enhanced in flashImpacts).
-        cameraShake(1.2, 900);
+        if (iActed) {
+          // Firing player: launch video, and their own impact visual already
+          // played immediately (via flashImpacts above) — timing unchanged.
+          playCineVideo("assets/videos/ballisticMissileLaunch_1.mp4");
+          cameraShake(1.2, 900);
+        } else {
+          // Target player: show the warning popup, THEN play the (deferred)
+          // impact visual 2 seconds AFTER the popup closes so they can see it.
+          const WARN_MS = 3800, POST_DELAY = 2000;
+          showTimedPopup("ballisticWarn", WARN_MS, () => {
+            setTimeout(() => { flashImpacts(result); cameraShake(1.2, 900); }, POST_DELAY);
+          });
+        }
       }
     } else if (result.kind === "pass") {
       toast(iActed ? "You ran out of time — turn passed." : "Opponent's turn timed out.");
@@ -1641,28 +1658,72 @@
     });
   }
 
-  // Clone a cached GLB and normalize it to a target footprint (w x h tiles):
-  // recenters on the ground, uniformly scales to fit within the tile footprint,
-  // and faces +z. Returns null if the model isn't cached (caller falls back).
+  // Set to true (or via ?glbdebug in the URL) to log each model's raw bounding
+  // box + pivot so scale differences between the 5 .glb files are visible.
+  const GLB_DEBUG = /[?&]glbdebug/.test(location.search);
+  const _glbDebugged = {};
+
+  // Clone a cached GLB and normalize it to a target footprint (w x h tiles).
+  //
+  // Robust normalization that generalizes across models exported at different
+  // raw scales AND with different pivot origins:
+  //   1) Measure the clone's TRUE world-space AABB (updateMatrixWorld first —
+  //      a fresh clone not yet in the scene has stale world matrices, which is
+  //      what made the old code work for one model but not the others).
+  //   2) Scale to fit the footprint on BOTH axes independently-aware: use a
+  //      uniform scale chosen so the model fits within the (w x h) tile box,
+  //      i.e. min of (targetW/sizeX, targetH/sizeZ) so an elongated plane on a
+  //      1x4 footprint isn't forced to a square tile size.
+  //   3) Re-measure after scaling (pivot may be anywhere) and translate so the
+  //      model is horizontally centered and its base sits on the tile top.
   function instantiateGlb(url, w, h) {
     const proto = _glbCache[url];
     if (!proto) return null;
     const obj = proto.clone(true);
-    // Measure and normalize.
-    const box = new THREE.Box3().setFromObject(obj);
-    const size = new THREE.Vector3(); box.getSize(size);
-    const center = new THREE.Vector3(); box.getCenter(center);
-    // Uniform scale so the model's larger horizontal extent fits ~85% of the
-    // footprint's smaller dimension (keeps it on-tile, consistent across models).
-    const targetXZ = Math.min(w, h) * 0.85;
-    const modelXZ = Math.max(size.x, size.z) || 1;
-    const s = targetXZ / modelXZ;
-    const wrap = new THREE.Group();
+    obj.position.set(0, 0, 0); obj.rotation.set(0, 0, 0); obj.scale.setScalar(1);
+    obj.updateMatrixWorld(true); // CRITICAL: refresh world matrices before measuring
+
+    let box0 = new THREE.Box3().setFromObject(obj);
+    let size0 = new THREE.Vector3(); box0.getSize(size0);
+
+    if (GLB_DEBUG && !_glbDebugged[url]) {
+      _glbDebugged[url] = true;
+      console.log("[GLB]", url,
+        "raw size=", size0.x.toFixed(2), size0.y.toFixed(2), size0.z.toFixed(2),
+        "min=", box0.min.x.toFixed(2), box0.min.y.toFixed(2), box0.min.z.toFixed(2),
+        "max=", box0.max.x.toFixed(2), box0.max.y.toFixed(2), box0.max.z.toFixed(2));
+    }
+
+    // Align the model's LONGER horizontal axis with the footprint's LONGER axis
+    // so an elongated model (e.g. the plane) fills a non-square footprint (1x4)
+    // correctly regardless of how its long axis was baked in the .glb.
+    const footLongIsX = w >= h;
+    const modelLongIsX = size0.x >= size0.z;
+    if (footLongIsX !== modelLongIsX) {
+      obj.rotation.y += Math.PI / 2;
+      obj.updateMatrixWorld(true);
+      box0 = new THREE.Box3().setFromObject(obj);
+      size0 = new THREE.Vector3(); box0.getSize(size0);
+    }
+
+    // Fit within the footprint box (leave a small margin). Non-square aware:
+    // uniform scale = the tightest of the two axis fits so it never overflows.
+    const targetW = w * 0.85, targetD = h * 0.85;
+    const sx = targetW / (size0.x || 1);
+    const sz = targetD / (size0.z || 1);
+    const s = Math.min(sx, sz) || 1;
     obj.scale.setScalar(s);
-    // Recenter horizontally, and sit the model's base on y=0.
-    obj.position.x = -center.x * s;
-    obj.position.z = -center.z * s;
-    obj.position.y = -box.min.y * s;
+    obj.updateMatrixWorld(true);
+
+    // Re-measure AFTER scaling to correctly account for the pivot, then place
+    // the model centered horizontally with its base on y=0.
+    const box1 = new THREE.Box3().setFromObject(obj);
+    const center1 = new THREE.Vector3(); box1.getCenter(center1);
+    obj.position.x -= center1.x;
+    obj.position.z -= center1.z;
+    obj.position.y -= box1.min.y;
+
+    const wrap = new THREE.Group();
     wrap.add(obj);
     return wrap;
   }
@@ -1685,17 +1746,25 @@
       let proto = _glbCache[url];
       if (!proto) continue; // model not loaded -> skip (ground texture still shows)
       const tree = proto.clone(true);
-      // Normalize tree to ~0.8 tile tall.
+      tree.position.set(0, 0, 0); tree.rotation.set(0, 0, 0); tree.scale.setScalar(1);
+      tree.updateMatrixWorld(true);
+      // Normalize tree to ~1.4 tiles tall, measuring correctly (world matrices
+      // + pivot-aware, same fix as tanks) and caching per model.
       if (!_treeCache[url]) {
-        const box = new THREE.Box3().setFromObject(proto);
+        const box = new THREE.Box3().setFromObject(tree);
         const size = new THREE.Vector3(); box.getSize(size);
-        _treeCache[url] = { s: 0.9 / (Math.max(size.y, 0.001)), minY: box.min.y };
+        _treeCache[url] = { s: 1.4 / (Math.max(size.y, 0.001)) };
       }
       const info = _treeCache[url];
       tree.scale.setScalar(info.s);
+      tree.updateMatrixWorld(true);
+      // Re-measure after scaling to seat the trunk base on the tile top and
+      // center it horizontally, then apply per-tile jitter.
+      const b1 = new THREE.Box3().setFromObject(tree);
+      const c1 = new THREE.Vector3(); b1.getCenter(c1);
       const ox = (tileHash(x, y, 101 + i) - 0.5) * 0.5;
       const oz = (tileHash(x, y, 211 + i) - 0.5) * 0.5;
-      tree.position.set(wc.x + ox, -info.minY * info.s + 0.12, wc.z + oz);
+      tree.position.set(wc.x + ox - c1.x, -b1.min.y + 0.12, wc.z + oz - c1.z);
       tree.rotation.y = tileHash(x, y, 313 + i) * Math.PI * 2;
       tree.traverse((c) => { if (c.isMesh) c.castShadow = true; });
       boardGroup.add(tree);
@@ -1770,12 +1839,15 @@
     const group = new THREE.Group();
     // Prefer the real .glb model; fall back to the procedural mesh if it isn't
     // loaded (keeps the game fully playable if an asset is missing).
+    // Fit to the placed footprint (w,h already swapped above for vertical), so
+    // the model fills its footprint box in the correct orientation. We do NOT
+    // additionally rotate the model — the non-square fit already elongates it
+    // along the correct axis (important for the 1x4 plane in both rotations),
+    // and applying both a swapped fit AND a 90° spin would double-transform it.
     let glb = instantiateGlb(GLB_TANKS[tank.type], w, h);
     if (glb) {
-      // Vertical placement: models sit on the tile top (~0.12 above ground).
+      // Models sit on the tile top (~0.12 above ground).
       glb.position.y = 0.12;
-      // Orient vertical placements by 90° so the model faces along its footprint.
-      if (tank.rotation === 1) glb.rotation.y = Math.PI / 2;
       // Sunk units fade out (traverse materials on the clone).
       if (tank.sunk) glb.traverse((c) => { if (c.isMesh && c.material) {
         c.material = c.material.clone(); c.material.transparent = true; c.material.opacity = 0.3;
