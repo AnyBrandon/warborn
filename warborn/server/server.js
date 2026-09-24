@@ -34,12 +34,18 @@ const socketMeta = new Map();
 // playerId -> socket (so we can push per-player views)
 const playerSockets = new Map();
 
-// Fixed room code (Phase 3 lobby simplification): every Create Room uses the
-// same constant code. This intentionally means only one room can exist at a
-// time across all players — that's the expected behavior for now.
-const FIXED_ROOM_CODE = "4321";
+// Generate a unique random 4-character room code (avoids ambiguous characters
+// like 0/O and 1/I). Retries until it finds one not already in use.
 function makeRoomCode() {
-  return FIXED_ROOM_CODE;
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code;
+  do {
+    code = "";
+    for (let i = 0; i < 4; i++) {
+      code += chars[Math.floor(Math.random() * chars.length)];
+    }
+  } while (rooms.has(code));
+  return code;
 }
 
 function makePlayerId() {
@@ -148,18 +154,8 @@ function handleMessage(socket, raw) {
 
 function onCreateRoom(socket) {
   const roomCode = makeRoomCode();
-  // With a fixed room code only one room can exist at a time. If a room with
-  // this code already exists and still has a free slot, join it instead of
-  // clobbering it; if it's full, reject; otherwise create a fresh room.
-  let match = rooms.get(roomCode);
-  if (match) {
-    if (Object.keys(match.players).length >= 2) {
-      return sendError(socket, "Room 4321 is full");
-    }
-  } else {
-    match = gl.createMatch(roomCode);
-    rooms.set(roomCode, match);
-  }
+  const match = gl.createMatch(roomCode);
+  rooms.set(roomCode, match);
 
   const playerId = makePlayerId();
   const slot = gl.addPlayer(match, playerId);
