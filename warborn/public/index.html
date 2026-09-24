@@ -551,7 +551,7 @@
 
   const TANK_COLORS = {
     command: "#f59e0b",
-    heavy: "#ef4444",
+    heavy: "#4b5320",  // camouflage olive drab — distinct from the red hit marker
     medium: "#3b82f6",
     light: "#22c55e",
     plane: "#a855f7", // Transportation Plane — distinct purple (non-combat)
@@ -755,15 +755,24 @@
     reconBtn.title = v.canRecon ? "" : "Recon Sweep already used this game";
     reconBtn.classList.toggle("secondary", G.mode !== "recon");
 
-    // Reposition is gated on the Transportation Plane being alive.
+    // Reposition is gated on the Transportation Plane being alive. Once the
+    // plane is destroyed the player can never reposition again, so HIDE the
+    // Reposition (and its Rotate) control entirely rather than showing it greyed.
     const repoBtn = $("repoBtn");
-    show("repoBtn");
-    repoBtn.disabled = !v.canReposition;
-    repoBtn.title = v.canReposition ? "" : "Reposition disabled — your Transportation Plane was destroyed.";
-    repoBtn.classList.toggle("secondary", G.mode !== "reposition");
+    const planeGone = !v.planeAlive;
+    if (planeGone) {
+      hide("repoBtn");
+    } else {
+      show("repoBtn");
+      repoBtn.disabled = !v.canReposition;
+      repoBtn.title = v.canReposition ? "" : "Reposition disabled.";
+      repoBtn.classList.toggle("secondary", G.mode !== "reposition");
+    }
 
     G.mode ? show("cancelActionBtn") : hide("cancelActionBtn");
-    (G.mode === "reposition" && G.repoTankId) ? show("rotateActionBtn") : hide("rotateActionBtn");
+    // Rotate only shows while actively staging a reposition (which itself is
+    // impossible once the plane is gone).
+    (!planeGone && G.mode === "reposition" && G.repoTankId) ? show("rotateActionBtn") : hide("rotateActionBtn");
     anySel ? show("confirmBtn") : hide("confirmBtn");
 
     if (G.mode === "fire") {
@@ -1075,6 +1084,7 @@
     };
   }
 
+
   // Map tile data (land/void/hill) is server-authoritative: it arrives in the
   // player view as `view.grid` once a map is selected. The client renders
   // directly from that — maps.js on the server is the single source of truth.
@@ -1277,23 +1287,33 @@
     }
 
     if (battle) {
-      // Unified battle view: frame the WHOLE shared map, but orient the camera
-      // so THIS player's OWN zone is in the foreground (nearest the camera) and
-      // the enemy zone is beyond it — matching each player's natural viewpoint.
-      // Without this, Player A (top/low-y zone) would look across at the enemy
-      // zone in front and their own zone far away.
-      const myZone = G.view && G.view.myZone;
+      // Unified battle view: center the camera on THIS player's OWN zone and sit
+      // the camera BEHIND it (offset away from the map center), so the player's
+      // own territory fills the frame and the enemy zone lies beyond. This works
+      // for BOTH horizontal splits (Isthmus/Archipelago, zones differ in x) AND
+      // vertical splits (Highland/Squid, zones differ in y) — the old code keyed
+      // only on zone.y and centered on the map middle, so left/right maps gave
+      // both players an identical (map-center) view aimed between the zones.
+      const myZone = (G.view && G.view.myZone) || { x: 0, y: 0, w: GRID_W, h: GRID_H };
+      // My zone center in world coords.
+      const cxTile = myZone.x + myZone.w / 2 - 0.5;
+      const cyTile = myZone.y + myZone.h / 2 - 0.5;
+      const wc = tileToWorld(cxTile, cyTile);
+      // Direction from MAP CENTER out to my zone center — the camera sits beyond
+      // my zone along that direction so my zone is in the foreground.
+      let dirX = wc.x, dirZ = wc.z;
+      const len = Math.hypot(dirX, dirZ) || 1;
+      dirX /= len; dirZ /= len;
+      // Frame roughly my-zone-plus-context sized region.
       const fov = (camera.fov * Math.PI) / 180;
       const aspect = camera.aspect || 1;
-      const spanX = GRID_W + 6, spanZ = GRID_H + 6;
+      const spanX = Math.max(myZone.w, GRID_W * 0.7) + 10;
+      const spanZ = Math.max(myZone.h, GRID_H * 0.7) + 10;
       const half = Math.max(spanZ / 2, (spanX / 2) / aspect);
-      const dist = (half / Math.tan(fov / 2)) * 1.5 + 8;
-      // Decide which side my zone is on: if it's in the top half of the map
-      // (smaller y / -z), place the camera on the -z side looking toward +z.
-      const myOnTop = myZone ? (myZone.y + myZone.h / 2) < GRID_H / 2 : false;
-      const zSign = myOnTop ? -1 : 1;
-      controls.target.set(0, 0, 0);
-      camera.position.set(0, dist * 0.85, zSign * dist * 0.6);
+      const dist = (half / Math.tan(fov / 2)) * 1.3 + 8;
+      const back = dist * 0.6; // how far behind my zone the camera sits
+      controls.target.set(wc.x, 0, wc.z);
+      camera.position.set(wc.x + dirX * back, dist * 0.8, wc.z + dirZ * back);
       controls.update();
       return;
     } else {
