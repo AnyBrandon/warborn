@@ -90,6 +90,9 @@ ok(!wrongTurn.ok && /your turn/i.test(wrongTurn.error), "non-active player is re
 const r1 = gl.submitAction(m, firstId, { action: "pass" });
 ok(r1.ok && m.activeSlot === m.players[secondId].slot, "turn passes to opponent after action");
 
+// ---- Per-turn timer duration (Phase: bumped 30s -> 45s) ----
+ok(gl.TURN_TIME_MS === 45000, "per-turn timer is 45 seconds");
+
 // ---- Turn timeout passes play to the other player ----
 const beforeSlot = m.activeSlot;
 const to = gl.timeoutTurn(m);

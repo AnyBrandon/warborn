@@ -159,6 +159,39 @@
   .intrusion-glyph { font-size: 44px; margin-bottom: 8px; animation: blink 0.6s steps(2) infinite; }
   #intrusionLog { color: #ff6b6b; text-align: left; }
 
+  /* ---- Cinematic popups (video + dramatic alerts) ---- */
+  #videoScreen, #ballisticWarn, #repoCine, #defeatCine { background: rgba(2,3,6,0.94); z-index: 70; }
+  .videobox { width: min(90vw, 960px); border: 1px solid #2a3852; border-radius: 8px; overflow: hidden; box-shadow: 0 0 60px rgba(0,0,0,.7); background: #000; }
+  #cineVideo { width: 100%; height: auto; display: block; }
+
+  .alertbox {
+    width: 560px; max-width: 92vw; background: #14060a; border: 2px solid #e11d48; border-radius: 10px;
+    box-shadow: 0 0 70px rgba(225,29,72,.55); font-family: 'Consolas', ui-monospace, 'Courier New', monospace;
+    color: #ff7a8a; padding: 30px 26px; text-align: center;
+    animation: alertPulse 0.7s ease-in-out infinite alternate;
+  }
+  .alertbox.defeat { border-color: #6b7280; box-shadow: 0 0 60px rgba(120,120,140,.4); color: #b8c0cc; background: #0c0e14; animation: none; }
+  @keyframes alertPulse { from { box-shadow: 0 0 30px rgba(225,29,72,.35); } to { box-shadow: 0 0 90px rgba(225,29,72,.8); } }
+  .alert-glyph { font-size: clamp(48px, 12vw, 76px); line-height: 1; margin-bottom: 8px; animation: blink 0.5s steps(2) infinite; }
+  .alertbox.defeat .alert-glyph { animation: none; color: #ff6b6b; }
+  .alert-title { font-size: clamp(22px, 6vw, 34px); font-weight: 800; letter-spacing: 3px; color: #ff2d55; text-shadow: 0 0 14px rgba(255,45,85,.6); }
+  .alertbox.defeat .alert-title { color: #e6edf3; text-shadow: none; }
+  .alert-sub { margin-top: 12px; font-size: clamp(13px, 3.6vw, 16px); line-height: 1.5; color: #ffb3bd; }
+  .alertbox.defeat .alert-sub { color: #9fb2cc; }
+  .alert-klaxon { margin-top: 14px; font-size: 26px; letter-spacing: 8px; color: #ffd23a; animation: blink 0.4s steps(2) infinite; }
+
+  .repobox {
+    width: 460px; max-width: 90vw; background: #071019; border: 1px solid #2f80b5; border-radius: 8px;
+    box-shadow: 0 0 44px rgba(47,128,181,.4); font-family: 'Consolas', ui-monospace, 'Courier New', monospace;
+    color: #7fd1ff; padding: 26px; text-align: center;
+  }
+  .repo-line { font-size: 12px; letter-spacing: 3px; color: #5fa8d8; }
+  .repo-title { font-size: clamp(20px, 5.5vw, 30px); font-weight: 800; letter-spacing: 4px; margin: 8px 0 14px; text-shadow: 0 0 12px rgba(127,209,255,.5); }
+  .repo-bar { height: 8px; background: #0d1c2a; border: 1px solid #244a68; border-radius: 4px; overflow: hidden; }
+  .repo-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#244a68,#7fd1ff); animation: repoFill 3s linear forwards; }
+  @keyframes repoFill { to { width: 100%; } }
+  .repo-sub { margin-top: 12px; font-size: 13px; color: #9fb2cc; }
+
   /* Floating zoom controls for the canvas (pinch-zoom alternative on touch). */
   #zoomctl {
     position: absolute; left: calc(10px + var(--sal)); bottom: calc(80px + var(--sab));
@@ -305,11 +338,48 @@
       </div>
     </div>
 
+    <!-- Cinematic video popup (reused for ballistic launch, reposition, victory) -->
+    <div id="videoScreen" class="center-screen hidden">
+      <div class="videobox">
+        <video id="cineVideo" playsinline muted></video>
+      </div>
+    </div>
+
+    <!-- Incoming Ballistic Missile warning (target player, no video) -->
+    <div id="ballisticWarn" class="center-screen hidden">
+      <div class="alertbox">
+        <div class="alert-glyph">☢</div>
+        <div class="alert-title">INCOMING BALLISTIC STRIKE</div>
+        <div class="alert-sub">Enemy has launched their orbital ballistic missile.<br/>IMPACT IMMINENT — BRACE POSITIONS.</div>
+        <div class="alert-klaxon">⚠ ⚠ ⚠</div>
+      </div>
+    </div>
+
+    <!-- Reposition acting-player text popup (no video) -->
+    <div id="repoCine" class="center-screen hidden">
+      <div class="repobox">
+        <div class="repo-line">// TACTICAL MANEUVER</div>
+        <div class="repo-title">REPOSITIONING UNIT</div>
+        <div class="repo-bar"><div class="repo-bar-fill"></div></div>
+        <div class="repo-sub">Recalculating firing solution…</div>
+      </div>
+    </div>
+
+    <!-- Defeat cinematic (losing player, no video) -->
+    <div id="defeatCine" class="center-screen hidden">
+      <div class="alertbox defeat">
+        <div class="alert-glyph">✖</div>
+        <div class="alert-title">FORCES ELIMINATED</div>
+        <div class="alert-sub">Your command has fallen. The battle is lost.</div>
+      </div>
+    </div>
+
     <div id="toast"></div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
   <script>
   // ===========================================================================
   // Warborn client — single-file. All game UI, state, rendering, and network.
@@ -325,7 +395,7 @@
     slot: null,           // "A" or "B"
     maps: [],
     roster: [],
-    turnTimeMs: 30000,
+    turnTimeMs: 45000,
     view: null,           // latest fog-of-war view from server
     selectedMapId: null,
 
@@ -957,12 +1027,27 @@
       fxTracer(origin, center, 0xff8c1a);
       setTimeout(() => { result.impacts.forEach((im) => im.hit ? fxExplosion(im, 1.3, 0xff8c1a) : fxDust(im)); }, 240);
     } else if (w === "ballistic") {
-      // The big moment: shockwave + explosions across the whole star.
-      fxShockwave(center);
+      // THE big moment: multiple expanding shockwaves + a huge central blast +
+      // a heavier, longer explosion cascade across the entire star pattern.
+      fxShockwaveBig(center);
+      setTimeout(() => fxShockwaveBig(center), 180);
+      fxExplosion(center, 3.0, 0xffffff);            // blinding central flash
+      setTimeout(() => fxExplosion(center, 3.8, 0xffd23a), 120);
       result.impacts.forEach((im, idx) => setTimeout(() => {
-        fxExplosion(im, im.hit ? 1.6 : 1.1, im.hit ? 0xffd23a : 0xffb84a);
-      }, 120 + idx * 20));
+        fxExplosion(im, im.hit ? 2.4 : 1.7, im.hit ? 0xffd23a : 0xffb84a);
+      }, 140 + idx * 35));
     }
+  }
+
+  // A larger, longer shockwave ring for the Ballistic Missile.
+  function fxShockwaveBig(tile) {
+    const wc = tileToWorld(tile.x, tile.y);
+    const geo = new THREE.RingGeometry(0.5, 1.0, 40);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffe23a, transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(wc.x, 0.3, wc.z);
+    addEffect(m, 1100, (k) => { const s = 1 + k * 18; m.scale.set(s, s, s); m.material.opacity = 0.9 * (1 - k); });
   }
 
   // Rising smoke particle stack on an owner-visible smoke tile.
@@ -993,6 +1078,54 @@
     addEffect(m, 5000, (k) => { m.material.opacity = 0.15 + 0.25 * Math.abs(Math.sin(k * Math.PI * 6)); });
   }
 
+  // ---- Cinematic popups -----------------------------------------------------
+  // Play a video in a fullscreen popup; auto-closes when the video ends. Calls
+  // onDone() after close. Robust to autoplay/load failures (falls back to a
+  // short timeout so the game never gets stuck behind a broken video).
+  function playCineVideo(src, onDone) {
+    const screen = $("videoScreen");
+    const vid = $("cineVideo");
+    let finished = false;
+    const finish = () => {
+      if (finished) return; finished = true;
+      vid.pause(); vid.removeAttribute("src"); vid.load();
+      hide("videoScreen");
+      if (onDone) onDone();
+    };
+    vid.onended = finish;
+    vid.onerror = () => setTimeout(finish, 300);
+    vid.src = src;
+    show("videoScreen");
+    const p = vid.play();
+    if (p && p.catch) p.catch(() => { /* autoplay may be blocked; muted should allow it */ });
+    // Safety net: if 'ended' never fires (e.g. missing metadata), close after 12s.
+    setTimeout(finish, 12000);
+  }
+
+  // Camera shake — a brief positional jitter of the camera for impact drama.
+  function cameraShake(intensity, durationMs) {
+    if (!camera) return;
+    const base = camera.position.clone();
+    const t0 = Date.now();
+    (function tick() {
+      const el = Date.now() - t0;
+      if (el >= durationMs) { camera.position.copy(base); return; }
+      const decay = 1 - el / durationMs;
+      camera.position.set(
+        base.x + (Math.random() - 0.5) * intensity * decay,
+        base.y + (Math.random() - 0.5) * intensity * decay,
+        base.z + (Math.random() - 0.5) * intensity * decay
+      );
+      requestAnimationFrame(tick);
+    })();
+  }
+
+  // Show a dramatic non-video alert popup for `ms`, then auto-dismiss + onDone.
+  function showTimedPopup(id, ms, onDone) {
+    show(id);
+    setTimeout(() => { hide(id); if (onDone) onDone(); }, ms);
+  }
+
   // ---- Single-action result feedback ---------------------------------------
   function applyActionResult(result) {
     // Reset my local staging for the next time it's my turn.
@@ -1012,10 +1145,21 @@
       } else if (hits > 0) {
         toast(sunkCount > 0 ? `Enemy ${wl} sank ${sunkCount} of your units!` : `Enemy ${wl} hit you (${hits})!`);
       }
+      // BALLISTIC MISSILE cinematics (presentational; does not block resolution).
+      if (result.weapon === "ballistic") {
+        if (iActed) playCineVideo("assets/videos/ballisticMissileLaunch_1.mp4");
+        else showTimedPopup("ballisticWarn", 3800);
+        // Intensify impact drama with a camera shake (the impact effect itself
+        // is enhanced in flashImpacts).
+        cameraShake(1.2, 900);
+      }
     } else if (result.kind === "pass") {
       toast(iActed ? "You ran out of time — turn passed." : "Opponent's turn timed out.");
-    } else if (result.kind === "reposition" && iActed) {
-      toast("Unit repositioned.");
+    } else if (result.kind === "reposition") {
+      // REPOSITION cinematics: actor sees a tactical text popup; opponent sees a
+      // short video. Presentational only — reposition logic already resolved.
+      if (iActed) { toast("Unit repositioned."); showTimedPopup("repoCine", 3200); }
+      else playCineVideo("assets/videos/reposition_1.mp4");
     } else if (result.kind === "smoke" && iActed) {
       toast("Smoke deployed — enemy shots on it will miss (once).");
       if (result.smokePlaced) fxSmokeRise(result.smokePlaced.x, result.smokePlaced.y); // owner-only effect
@@ -1117,7 +1261,6 @@
   // ---- Game over ------------------------------------------------------------
   function onGameOver(msg) {
     stopTimer();
-    show("overScreen");
     const won = msg.youWon;
     $("overTitle").textContent = won ? "VICTORY" : "DEFEAT";
     $("overTitle").style.color = won ? "#4ade80" : "#ff6b6b";
@@ -1128,6 +1271,11 @@
       m = won ? "Your opponent surrendered — victory is yours." : "You surrendered the match.";
     }
     $("overMsg").textContent = m;
+    // Cinematic BEFORE the existing win/lose screen: winner gets a video, loser
+    // gets a dramatic defeat popup. Both then proceed to the win/lose screen.
+    const showFinal = () => show("overScreen");
+    if (won) playCineVideo("assets/videos/victory_1.mp4", showFinal);
+    else showTimedPopup("defeatCine", 3600, showFinal);
   }
 
   // ---- Opponent presence (disconnect pause) --------------------------------
@@ -1446,6 +1594,9 @@
           mesh = new THREE.Mesh(geo, mat);
           mesh.position.set(w.x, t === 2 ? 0.2 : 0, w.z);
           mesh.receiveShadow = true;
+          // Forest decoration: sparse scatter of tree models (deterministic per
+          // tile so it doesn't flicker on re-render). Purely decorative.
+          if (t === 3) scatterTrees(x, y, w);
         }
         boardGroup.add(mesh);
         tileMeshes.push({ x, y, side, mesh, playable: t !== 0 });
@@ -1454,11 +1605,121 @@
     }
   }
 
+  // ---- GLB model loading + caching -----------------------------------------
+  // Load each .glb ONCE, cache the loaded scene, then clone per unit instance.
+  const GLB_TANKS = {
+    command: "assets/tanks/commandTank.glb",
+    heavy:   "assets/tanks/heavyTank.glb",
+    medium:  "assets/tanks/mediumTank.glb",
+    light:   "assets/tanks/lightTank.glb",
+    plane:   "assets/tanks/plane.glb",
+  };
+  const GLB_TREES = ["assets/terrain/tree1.glb", "assets/terrain/tree2.glb", "assets/terrain/tree3.glb"];
+  const _glbCache = {};      // url -> loaded THREE.Object3D (prototype to clone)
+  let _gltfLoader = null;
+  let _modelsReady = false;
+
+  function preloadModels(onDone) {
+    if (typeof THREE.GLTFLoader !== "function") { onDone && onDone(); return; }
+    _gltfLoader = new THREE.GLTFLoader();
+    const urls = [...Object.values(GLB_TANKS), ...GLB_TREES];
+    let remaining = urls.length;
+    if (!remaining) { _modelsReady = true; onDone && onDone(); return; }
+    urls.forEach((url) => {
+      _gltfLoader.load(url,
+        (gltf) => {
+          const root = gltf.scene || gltf.scenes[0];
+          root.traverse((c) => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = false; } });
+          _glbCache[url] = root;
+          if (--remaining === 0) { _modelsReady = true; onDone && onDone(); }
+        },
+        undefined,
+        () => { // on error: leave uncached so we fall back to procedural
+          console.warn("GLB failed to load:", url);
+          if (--remaining === 0) { _modelsReady = true; onDone && onDone(); }
+        });
+    });
+  }
+
+  // Clone a cached GLB and normalize it to a target footprint (w x h tiles):
+  // recenters on the ground, uniformly scales to fit within the tile footprint,
+  // and faces +z. Returns null if the model isn't cached (caller falls back).
+  function instantiateGlb(url, w, h) {
+    const proto = _glbCache[url];
+    if (!proto) return null;
+    const obj = proto.clone(true);
+    // Measure and normalize.
+    const box = new THREE.Box3().setFromObject(obj);
+    const size = new THREE.Vector3(); box.getSize(size);
+    const center = new THREE.Vector3(); box.getCenter(center);
+    // Uniform scale so the model's larger horizontal extent fits ~85% of the
+    // footprint's smaller dimension (keeps it on-tile, consistent across models).
+    const targetXZ = Math.min(w, h) * 0.85;
+    const modelXZ = Math.max(size.x, size.z) || 1;
+    const s = targetXZ / modelXZ;
+    const wrap = new THREE.Group();
+    obj.scale.setScalar(s);
+    // Recenter horizontally, and sit the model's base on y=0.
+    obj.position.x = -center.x * s;
+    obj.position.z = -center.z * s;
+    obj.position.y = -box.min.y * s;
+    wrap.add(obj);
+    return wrap;
+  }
+
+  // Deterministic per-tile pseudo-random (stable across re-renders, no flicker).
+  function tileHash(x, y, salt) {
+    let h = (x * 73856093) ^ (y * 19349663) ^ ((salt || 0) * 83492791);
+    h = (h ^ (h >>> 13)) >>> 0;
+    return (h % 10000) / 10000;
+  }
+  // Scatter 0-2 trees on a forest tile (sparse), each a random cached tree model.
+  // wc is the tile's world position. Decoration only — never pickable.
+  const _treeCache = {};
+  function scatterTrees(x, y, wc) {
+    const roll = tileHash(x, y, 7);
+    const count = roll < 0.35 ? 0 : roll < 0.8 ? 1 : 2; // ~65% of forest tiles get 1-2 trees
+    for (let i = 0; i < count; i++) {
+      const pick = Math.floor(tileHash(x, y, 31 + i * 5) * GLB_TREES.length) % GLB_TREES.length;
+      const url = GLB_TREES[pick];
+      let proto = _glbCache[url];
+      if (!proto) continue; // model not loaded -> skip (ground texture still shows)
+      const tree = proto.clone(true);
+      // Normalize tree to ~0.8 tile tall.
+      if (!_treeCache[url]) {
+        const box = new THREE.Box3().setFromObject(proto);
+        const size = new THREE.Vector3(); box.getSize(size);
+        _treeCache[url] = { s: 0.9 / (Math.max(size.y, 0.001)), minY: box.min.y };
+      }
+      const info = _treeCache[url];
+      tree.scale.setScalar(info.s);
+      const ox = (tileHash(x, y, 101 + i) - 0.5) * 0.5;
+      const oz = (tileHash(x, y, 211 + i) - 0.5) * 0.5;
+      tree.position.set(wc.x + ox, -info.minY * info.s + 0.12, wc.z + oz);
+      tree.rotation.y = tileHash(x, y, 313 + i) * Math.PI * 2;
+      tree.traverse((c) => { if (c.isMesh) c.castShadow = true; });
+      boardGroup.add(tree);
+    }
+  }
+
+  // A colored ground ring under a unit to preserve mine/enemy (and class-color)
+  // distinction now that models carry their own baked materials.
+  function unitRing(color, w, h) {
+    const r = Math.min(w, h) * 0.5;
+    const geo = new THREE.RingGeometry(r * 0.7, r * 0.95, 24);
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+    const ring = new THREE.Mesh(geo, mat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.14;
+    return ring;
+  }
+
   // Build a low-poly model for a unit class, sized to its footprint (w x h in
   // tiles). Each class has a distinct silhouette so they're recognizable beyond
   // color: Command has an antenna + wide hull, Heavy has twin barrels + turret,
   // Medium has a single turret+barrel, Light is a small fast hull, and the
   // Transportation Plane has wings + tail (clearly not a tank).
+  // Used as a FALLBACK when the .glb model isn't available.
   function buildUnitModel(tank, w, h) {
     const g = new THREE.Group();
     const color = new THREE.Color(TANK_COLORS[tank.type] || "#888");
@@ -1505,13 +1766,36 @@
   function addTankMesh(tank) {
     let [w, h] = tank.footprint;
     if (tank.rotation === 1) [w, h] = [h, w];
-    const model = buildUnitModel(tank, w, h);
+
+    const group = new THREE.Group();
+    // Prefer the real .glb model; fall back to the procedural mesh if it isn't
+    // loaded (keeps the game fully playable if an asset is missing).
+    let glb = instantiateGlb(GLB_TANKS[tank.type], w, h);
+    if (glb) {
+      // Vertical placement: models sit on the tile top (~0.12 above ground).
+      glb.position.y = 0.12;
+      // Orient vertical placements by 90° so the model faces along its footprint.
+      if (tank.rotation === 1) glb.rotation.y = Math.PI / 2;
+      // Sunk units fade out (traverse materials on the clone).
+      if (tank.sunk) glb.traverse((c) => { if (c.isMesh && c.material) {
+        c.material = c.material.clone(); c.material.transparent = true; c.material.opacity = 0.3;
+      }});
+      group.add(glb);
+    } else {
+      group.add(buildUnitModel(tank, w, h));
+    }
+
+    // Player/class-color ring under the unit (these are MY units -> "mine" blue,
+    // tinted by class color so classes still read at a glance).
+    const ringColor = new THREE.Color(TANK_COLORS[tank.type] || "#7fd1ff");
+    group.add(unitRing(ringColor, w, h));
+
     const cx = tank.position.x + w / 2 - 0.5;
     const cy = tank.position.y + h / 2 - 0.5;
     const wc = tileToWorld(cx, cy);
-    model.position.set(wc.x, 0.12, wc.z);
-    model.userData = { tankId: tank.tankId };
-    tankGroup.add(model);
+    group.position.set(wc.x, 0.12, wc.z);
+    group.userData = { tankId: tank.tankId };
+    tankGroup.add(group);
   }
 
   // Hit/miss marker. hit=true -> red sphere; false -> BLACK dot (standardized
@@ -1884,6 +2168,9 @@
 
   // ---- Boot -----------------------------------------------------------------
   initThree();
+  // Preload GLB models once, then (re)build the scene so real models appear as
+  // soon as they're ready. Networking starts immediately in parallel.
+  preloadModels(() => { if (G.view) buildScene(); });
   connect();
   </script>
 </body>

@@ -36,7 +36,7 @@ const TANK_ROSTER = [
   { type: "plane", label: "Transportation Plane", footprint: [1, 4], count: 1, combat: false },
 ];
 
-const TURN_TIME_MS = 30000; // 30 second per-turn timer (single active player)
+const TURN_TIME_MS = 45000; // 45 second per-turn timer (single active player)
 
 // ---------------------------------------------------------------------------
 // WEAPONS (Phase 3). A Fire action now selects one of three weapons. Only one

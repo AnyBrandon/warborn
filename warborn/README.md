@@ -33,7 +33,7 @@ Open http://localhost:3000 in two browser tabs (or two machines). In tab 1 click
 - Player A picks the map (authoritative in Phase 1).
 - Both players deploy 10 units in their own zone: tap/click a unit in the tray, tap a tile, use **Rotate** (or press **R**) to turn it. Tap **Ready**.
 - Roster (10 units): 1 Command Tank, 2 Heavy, 3 Medium, 3 Light, and 1 **Transportation Plane** (1x4, non-combat — it can't fire but is placeable/targetable/sinkable).
-- Turns are **strict alternating** (Phase 2). A random player goes first, then players take turns one at a time. On your turn you pick ONE action (Fire, or Reposition if your plane is alive) and it resolves immediately. A 30s timer runs on the active player's turn only; if it expires you forfeit that turn and play passes to the opponent. The HUD shows whose turn it is.
+- Turns are **strict alternating** (Phase 2). A random player goes first, then players take turns one at a time. On your turn you pick ONE action (Fire, or Reposition if your plane is alive) and it resolves immediately. A 45s timer runs on the active player's turn only; if it expires you forfeit that turn and play passes to the opponent. The HUD shows whose turn it is.
 - **Transportation Plane gating**: you may only Reposition while your plane is alive. Once your plane is fully sunk, Reposition is permanently disabled (Fire remains). Enforced server-side.
 - **Weapons** (Fire picks one of three, all resolve instantly, all server-authoritative):
   - **Tank Shoot** — baseline, always available, unlimited. Hits 1 tile.
@@ -104,3 +104,12 @@ The generator uses seeded value-noise + per-template shaping masks, keeps the la
 ### Grid size sync
 
 `GRID_W`/`GRID_H` must stay in sync between `server/mapData.js` (source of truth, consumed by `maps.js`) and the client constant in `public/index.html` (search for `must match server`). The client camera framing auto-fits to the grid/zone size, so no manual zoom tuning is needed when the grid changes.
+
+## Assets & cinematics
+
+- Units render from real `.glb` models (`public/assets/tanks/`) loaded once via GLTFLoader and cloned per instance, auto-scaled to their footprint. A colored ground ring under each unit preserves the mine/class distinction regardless of the model's baked materials. If a model fails to load, the game falls back to the procedural low-poly mesh.
+- Forest tiles are decorated with a sparse, deterministic scatter of tree models (`public/assets/terrain/tree1-3.glb`) — purely cosmetic.
+- Cinematic popups (presentational only, never block resolution):
+  - Ballistic Missile: the firing player sees a launch video; the target sees a dramatic "incoming strike" warning; the impact effect is an intensified multi-shockwave blast with camera shake.
+  - Reposition: the acting player sees a "REPOSITIONING UNIT" tactical popup; the opponent sees a reposition video.
+  - Victory/Defeat: the winner sees a victory video, the loser a dramatic defeat popup, before the normal win/lose screen.
