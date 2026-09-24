@@ -1154,19 +1154,34 @@
       } else if (hits > 0) {
         toast(sunkCount > 0 ? `Enemy ${wl} sank ${sunkCount} of your units!` : `Enemy ${wl} hit you (${hits})!`);
       }
+
+      // ---- Weapon sound effects (presentational) ----
+      if (result.weapon === "tank_shoot") {
+        if (iActed) playSound("tankShot");                    // firing player
+        else if (hits === 0) playSound("missedTankShot");     // target on a MISS
+      } else if (result.weapon === "missile") {
+        if (iActed) playSound("missileLaunch");               // firing player
+        else if (hits > 0) playSound("missileExplosion");     // target when hit
+      }
+
       // BALLISTIC MISSILE cinematics (presentational; does not block resolution).
       if (result.weapon === "ballistic") {
         if (iActed) {
-          // Firing player: launch video, and their own impact visual already
-          // played immediately (via flashImpacts above) — timing unchanged.
+          // Firing player: launch video + launch sound; their own impact visual
+          // already played immediately (via flashImpacts above) — timing unchanged.
+          playSound("ballisticLaunch");
           playCineVideo("assets/videos/ballisticMissileLaunch_1.mp4");
           cameraShake(1.2, 900);
         } else {
-          // Target player: show the warning popup, THEN play the (deferred)
-          // impact visual 2 seconds AFTER the popup closes so they can see it.
-          const WARN_MS = 3800, POST_DELAY = 2000;
+          // Target player: show the warning popup for 6s, THEN wait 2s, THEN
+          // play the (deferred) impact visual so they can actually watch it.
+          const WARN_MS = 6000, POST_DELAY = 2000;
+          playSound("ballisticAlert"); // Part 4: alert klaxon alongside the popup
           showTimedPopup("ballisticWarn", WARN_MS, () => {
-            setTimeout(() => { flashImpacts(result); cameraShake(1.2, 900); }, POST_DELAY);
+            setTimeout(() => {
+              playSound("ballisticExplosion"); // Part 4: explosion with the impact
+              flashImpacts(result); cameraShake(1.2, 900);
+            }, POST_DELAY);
           });
         }
       }
@@ -1202,6 +1217,10 @@
     }
     if (result.smokePopped && result.smokePopped.some((s) => s.slot === G.slot)) {
       toast("Your smoke absorbed an enemy shot and dissipated.");
+    }
+    // Sound: one of MY OWN tanks was fully destroyed this action (any weapon).
+    if (result.sunk && result.sunk.some((s) => s.slot === G.slot)) {
+      playSound("tankDestroyed");
     }
   }
 
@@ -1636,6 +1655,45 @@
   let _gltfLoader = null;
   let _modelsReady = false;
 
+  // Debug flag (via ?glbdebug): logs each model's sub-mesh names + bounding box.
+  const GLB_DEBUG = /[?&]glbdebug/.test(location.search);
+  const _glbDebugged = {};
+
+  // ---- Sound effects (preloaded HTML5 Audio) --------------------------------
+  // Keyed short names -> file. Preloaded on boot so first playback has no lag.
+  const SOUND_FILES = {
+    ballisticLaunch:    "assets/sounds/ballisticMissileLaunch.mp3",
+    ballisticAlert:     "assets/sounds/ballisticAlert.wav",
+    ballisticExplosion: "assets/sounds/ballisticExplosion.wav",
+    missileLaunch:      "assets/sounds/missileLaunch.wav",
+    missileExplosion:   "assets/sounds/missileExplosition.wav", // (file name as provided)
+    tankShot:           "assets/sounds/tankShot.wav",
+    missedTankShot:     "assets/sounds/missedTankShot.wav",
+    tankDestroyed:      "assets/sounds/tankDestroyed.wav",
+  };
+  const _sounds = {};
+  function preloadSounds() {
+    for (const [key, url] of Object.entries(SOUND_FILES)) {
+      try {
+        const a = new Audio();
+        a.src = url; a.preload = "auto"; a.load();
+        _sounds[key] = a;
+      } catch (e) { /* ignore — playback will no-op if unavailable */ }
+    }
+  }
+  // Play a preloaded sound. Clones the audio node so overlapping/rapid triggers
+  // don't cut each other off. Presentational only; never throws into game flow.
+  function playSound(key) {
+    const base = _sounds[key];
+    if (!base) return;
+    try {
+      const node = base.cloneNode();
+      node.volume = 0.85;
+      const p = node.play();
+      if (p && p.catch) p.catch(() => {}); // autoplay policy: ignore rejection
+    } catch (e) { /* no-op */ }
+  }
+
   function preloadModels(onDone) {
     if (typeof THREE.GLTFLoader !== "function") { onDone && onDone(); return; }
     _gltfLoader = new THREE.GLTFLoader();
@@ -1646,7 +1704,17 @@
       _gltfLoader.load(url,
         (gltf) => {
           const root = gltf.scene || gltf.scenes[0];
-          root.traverse((c) => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = false; } });
+          const meshNames = [];
+          root.traverse((c) => {
+            if (c.isMesh) {
+              c.castShadow = true; c.receiveShadow = false;
+              c.frustumCulled = false;         // never cull sub-meshes (body etc.)
+              c.visible = true;
+              if (c.geometry && !c.geometry.boundingBox) c.geometry.computeBoundingBox();
+              meshNames.push(c.name || "(unnamed)");
+            }
+          });
+          if (GLB_DEBUG) console.log("[GLB loaded]", url, "meshes:", meshNames.length, meshNames);
           _glbCache[url] = root;
           if (--remaining === 0) { _modelsReady = true; onDone && onDone(); }
         },
@@ -1657,11 +1725,6 @@
         });
     });
   }
-
-  // Set to true (or via ?glbdebug in the URL) to log each model's raw bounding
-  // box + pivot so scale differences between the 5 .glb files are visible.
-  const GLB_DEBUG = /[?&]glbdebug/.test(location.search);
-  const _glbDebugged = {};
 
   // Clone a cached GLB and normalize it to a target footprint (w x h tiles).
   //
@@ -1706,13 +1769,16 @@
       size0 = new THREE.Vector3(); box0.getSize(size0);
     }
 
-    // Fit within the footprint box (leave a small margin). Non-square aware:
-    // uniform scale = the tightest of the two axis fits so it never overflows.
-    const targetW = w * 0.85, targetD = h * 0.85;
+    // Fit within the footprint box (small margin). For SQUARE footprints (tanks)
+    // this is uniform. For ELONGATED footprints (the 1x4 plane) we stretch the
+    // long axis so the model actually SPANS all its tiles instead of staying ~1
+    // tile — scale each horizontal axis independently to fill its footprint
+    // dimension. Y uses the smaller horizontal factor so height stays sensible.
+    const targetW = w * 0.9, targetD = h * 0.9;
     const sx = targetW / (size0.x || 1);
     const sz = targetD / (size0.z || 1);
-    const s = Math.min(sx, sz) || 1;
-    obj.scale.setScalar(s);
+    const sy = Math.min(sx, sz);
+    obj.scale.set(sx, sy, sz);
     obj.updateMatrixWorld(true);
 
     // Re-measure AFTER scaling to correctly account for the pivot, then place
@@ -2240,6 +2306,7 @@
 
   // ---- Boot -----------------------------------------------------------------
   initThree();
+  preloadSounds();
   // Preload GLB models once, then (re)build the scene so real models appear as
   // soon as they're ready. Networking starts immediately in parallel.
   preloadModels(() => { if (G.view) buildScene(); });
