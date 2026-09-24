@@ -13,7 +13,12 @@
  *  - Reposition is gated on the player's Transportation Plane being alive.
  */
 
-const { MAPS, LAND, HILL } = require("./maps");
+const { MAPS, LAND, HILL, FOREST, MUD } = require("./maps");
+
+// Forest camouflage: chance a single-tile Tank Shoot on a Forest tile is an
+// automatic miss (does NOT apply to Missile/Ballistic splash). Named constant
+// for easy tuning. Uses Math.random() at resolve time (injectable for tests).
+const FOREST_CAMO_MISS_CHANCE = 0.25;
 
 // ---------------------------------------------------------------------------
 // Roster config. footprint is [width, height] in tiles at rotation 0.
@@ -128,12 +133,23 @@ function computeTiles(footprint, rotation, position) {
 }
 
 // Is a tile land/hill (playable)?
+// A tile is playable (deployable/traversable) if it's any land-family type:
+// land, hill, forest, or mud. (Mud is playable but blocked as a Reposition
+// DESTINATION — see the reposition validation.)
 function isPlayable(map, x, y) {
   if (y < 0 || y >= map.grid.length) return false;
   if (x < 0 || x >= map.grid[0].length) return false;
   const t = map.grid[y][x];
-  return t === LAND || t === HILL;
+  return t === LAND || t === HILL || t === FOREST || t === MUD;
 }
+
+// Tile-type helper (bounds-safe).
+function tileAt(map, x, y) {
+  if (y < 0 || y >= map.grid.length) return VOID_TYPE;
+  if (x < 0 || x >= map.grid[0].length) return VOID_TYPE;
+  return map.grid[y][x];
+}
+const VOID_TYPE = 0;
 
 // Is a tile inside a rectangular zone?
 function inZone(zone, x, y) {
@@ -364,7 +380,7 @@ function setReady(match, playerId) {
 // ---------------------------------------------------------------------------
 // The active player submits ONE action; it validates and resolves immediately,
 // then the turn passes to the opponent. There is no simultaneous batching.
-function submitAction(match, playerId, action) {
+function submitAction(match, playerId, action, opts) {
   const player = match.players[playerId];
   if (!player) return { ok: false, error: "No such player" };
   if (match.phase !== "battle") return { ok: false, error: "Not in battle" };
@@ -388,8 +404,9 @@ function submitAction(match, playerId, action) {
   const validated = validateAction(match, player, action);
   if (!validated.ok) return validated;
 
-  // Resolve this single action immediately and advance the turn.
-  const result = resolveAction(match, validated.action);
+  // Resolve this single action immediately and advance the turn. `opts` allows
+  // tests to inject a deterministic rng for Forest camo; production uses default.
+  const result = resolveAction(match, validated.action, opts);
   return { ok: true, result };
 }
 
@@ -404,6 +421,17 @@ function advanceTurn(match) {
   // start. We simply increment round every two turns for display purposes.
   if (match.turn % 2 === 1) match.round += 1;
   match.activeSlot = next;
+}
+
+// Surrender: the given player forfeits; the OPPONENT is declared the winner and
+// the match ends immediately. Reuses the normal game-over flow/win state.
+function surrender(match, playerId) {
+  const player = match.players[playerId];
+  if (!player) return { ok: false, error: "No such player" };
+  if (match.phase !== "battle") return { ok: false, error: "Can only surrender during battle" };
+  match.phase = "over";
+  match.winner = opponentSlot(player.slot);
+  return { ok: true, winner: match.winner, surrenderedSlot: player.slot };
 }
 
 // Called by the server when the active player's 30s timer expires: they forfeit
@@ -506,10 +534,15 @@ function validateAction(match, player, action) {
     const newTiles = computeTiles(tank.footprint, rotation, position);
     const zone = zoneForSlot(match, player.slot);
 
-    // Must land on playable tiles inside own zone.
+    // Must land on playable tiles inside own zone. MUD tiles are explicitly
+    // invalid Reposition destinations (a tank cannot be MOVED onto mud — though
+    // it may have been deployed there initially, which is unaffected).
     for (const tl of newTiles) {
       if (!isPlayable(match.map, tl.x, tl.y)) {
         return { ok: false, error: "Must reposition onto land" };
+      }
+      if (tileAt(match.map, tl.x, tl.y) === MUD) {
+        return { ok: false, error: "Cannot reposition onto mud" };
       }
       if (!inZone(zone, tl.x, tl.y)) {
         return { ok: false, error: "Must stay in your deployment zone" };
@@ -557,7 +590,12 @@ function validateAction(match, player, action) {
 // per-tile sink tracking). Records the shot for fog-of-war, mutates the tank's
 // hitTiles/sunk state, and appends any newly-sunk tank into `result`. Returns
 // { hit }. Shared by all weapons — a splash weapon just calls this per tile.
-function applyHitToTile(match, target, x, y, result) {
+// opts.camoEligible: true only for single-tile Tank Shoot (Forest camo applies).
+// opts.rng: injectable random source (defaults to Math.random) for testing.
+function applyHitToTile(match, target, x, y, result, opts) {
+  opts = opts || {};
+  const rng = opts.rng || Math.random;
+
   // SMOKE: if the target has active smoke on this tile, the shot ALWAYS misses,
   // and the smoke is consumed by this triggering shot (reverts to normal after).
   const smokeIdx = (target.activeSmoke || []).findIndex((s) => s.x === x && s.y === y);
@@ -572,6 +610,18 @@ function applyHitToTile(match, target, x, y, result) {
   for (const tank of target.tanks) {
     if (tank.sunk) continue;
     if (!tank.tiles.some((t) => t.x === x && t.y === y)) continue;
+
+    // FOREST CAMO: only for single-tile Tank Shoot. If the occupied tile is a
+    // Forest tile, there's FOREST_CAMO_MISS_CHANCE the shot auto-misses. Does
+    // NOT apply to Missile/Ballistic splash (camoEligible=false there).
+    if (opts.camoEligible && tileAt(match.map, x, y) === FOREST) {
+      if (rng() < FOREST_CAMO_MISS_CHANCE) {
+        target.hits.set(`${x},${y}`, false); // recorded as a miss (camo)
+        result.camoMiss = result.camoMiss || [];
+        result.camoMiss.push({ x, y });
+        return { hit: false };
+      }
+    }
     if (!tank.hitTiles.some((t) => t.x === x && t.y === y)) {
       tank.hitTiles.push({ x, y });
     }
@@ -598,7 +648,9 @@ function applyHitToTile(match, target, x, y, result) {
 // Resolves the given (already-validated) action immediately, checks for a win,
 // then advances the turn to the opponent. Returns a result describing what
 // happened, broadcast to both clients.
-function resolveAction(match, act) {
+function resolveAction(match, act, opts) {
+  opts = opts || {};
+  const rng = opts.rng || Math.random; // injectable for deterministic tests
   for (const p of Object.values(match.players)) {
     if (!p.hits) p.hits = new Map(); // "x,y" -> resolved hit (bool)
   }
@@ -666,11 +718,14 @@ function resolveAction(match, act) {
       actor.shotsThisTurn += 1; // count toward the double-shot allowance
     }
 
-    const pattern = weaponPattern(act.weapon || "tank_shoot", act.target.x, act.target.y);
+    const weapon = act.weapon || "tank_shoot";
+    // Forest camo only affects single-tile Tank Shoot, never splash weapons.
+    const camoEligible = weapon === "tank_shoot";
+    const pattern = weaponPattern(weapon, act.target.x, act.target.y);
     for (const tl of pattern) {
       if (tl.x < 0 || tl.y < 0 || tl.x >= (match.map.grid[0].length) || tl.y >= match.map.grid.length) continue;
       if (!inZone(zone, tl.x, tl.y)) continue; // no effect outside enemy zone
-      const outcome = applyHitToTile(match, target, tl.x, tl.y, result);
+      const outcome = applyHitToTile(match, target, tl.x, tl.y, result, { camoEligible, rng });
       result.impacts.push({ x: tl.x, y: tl.y, hit: outcome.hit });
     }
   }
@@ -857,8 +912,11 @@ module.exports = {
   submitAction,
   resolveAction,
   timeoutTurn,
+  surrender,
   canReposition,
   planeAlive,
+  tileAt,
+  FOREST_CAMO_MISS_CHANCE,
   buildPlayerView,
   resetMatch,
   computeTiles,

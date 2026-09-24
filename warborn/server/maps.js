@@ -8,9 +8,11 @@
  * just organically shaped (real coastlines: bays, peninsulas, inlets, islands).
  *
  * Every tile is one of:
- *   0 = void  (unplayable, rendered as water / out-of-bounds)
- *   1 = land  (placeable + playable)
- *   2 = hill  (visual only in Phase 1 — treated exactly like land for gameplay)
+ *   0 = void   (unplayable, rendered as water / out-of-bounds)
+ *   1 = land   (placeable + playable)
+ *   2 = hill   (terrain-visual only; no gameplay effect)
+ *   3 = forest (playable land + camouflage: chance to auto-miss Tank Shoot)
+ *   4 = mud    (playable land, but INVALID as a Reposition destination)
  *
  * Each map defines two deployment regions (zoneA / zoneB) as rectangular
  * bounding boxes {x, y, w, h}. A tank may only deploy on land/hill tiles that
@@ -28,6 +30,8 @@ const { GRID_W, GRID_H, DATA } = require("./mapData");
 const VOID = 0;
 const LAND = 1;
 const HILL = 2;
+const FOREST = 3;
+const MUD = 4;
 
 // Human-facing names for each generated template.
 const NAMES = {
@@ -58,6 +62,8 @@ module.exports = {
   VOID,
   LAND,
   HILL,
+  FOREST,
+  MUD,
   MAPS,
   MAP_LIST,
 };

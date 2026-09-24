@@ -494,5 +494,123 @@ ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballis
   ok(!blocked.ok && /damaged|fired/i.test(blocked.error), "reposition blocked onto a MISSED (fired-upon) tile");
 }
 
+// ==========================================================================
+// PART 2 — Terrain effects: Forest camo (Tank Shoot) + Mud blocks Reposition
+// ==========================================================================
+{
+  const { FOREST, MUD } = require("./maps");
+  const t = freshBattle("highland");
+
+  // Move one of B's tanks onto a FOREST tile in B's zone (via deployment-agnostic
+  // direct state tweak is not allowed; instead find a B tank tile that IS forest,
+  // or place a smoke-free forest tile under a B tank by locating overlap).
+  // Simplest deterministic approach: find a FOREST tile inside B's zone, and a
+  // B tank; if the tank isn't there, we still test camo by pointing at a forest
+  // tile that a tank occupies — so search for a (forest tile that a B tank covers).
+  const bz = t.map.zoneB;
+  let forestTankTile = null;
+  outerF: for (const tank of t.players["b"].tanks) {
+    for (const tl of tank.tiles) {
+      if (t.map.grid[tl.y] && t.map.grid[tl.y][tl.x] === FOREST) { forestTankTile = tl; break outerF; }
+    }
+  }
+  // If no B tank happens to sit on forest, reposition one there (A-side helper):
+  if (!forestTankTile) {
+    // find a forest tile in B zone and move B's first light tank's top-left there
+    let fTile = null;
+    for (let y = bz.y; y < bz.y + bz.h && !fTile; y++)
+      for (let x = bz.x; x < bz.x + bz.w && !fTile; x++)
+        if (t.map.grid[y][x] === FOREST) fTile = { x, y };
+    if (fTile) {
+      // Move B's light tank onto forest (B's own zone; forest is valid, not mud).
+      // Ensure it's B's turn.
+      ensureTurn(t, "b");
+      const bl = t.players["b"].tanks.find((k) => k.type === "light");
+      const rr = gl.submitAction(t, "b", { action: "reposition", tankId: bl.tankId, position: fTile, rotation: 0 });
+      if (rr.ok) forestTankTile = { x: fTile.x, y: fTile.y };
+    }
+  }
+  ok(!!forestTankTile, "found/created a B tank on a Forest tile");
+
+  if (forestTankTile) {
+    // rng that always rolls BELOW the miss chance => camo forces a miss.
+    ensureTurn(t, "a");
+    const camoMiss = gl.submitAction(t, "a",
+      { action: "fire", weapon: "tank_shoot", target: forestTankTile },
+      { rng: () => 0.0 });
+    ok(camoMiss.ok && camoMiss.result.impacts[0].hit === false && (camoMiss.result.camoMiss || []).length === 1,
+       "Forest camo forces Tank Shoot to miss (rng below chance)");
+
+    // rng that rolls ABOVE the miss chance => normal hit.
+    ensureTurn(t, "a");
+    const camoHit = gl.submitAction(t, "a",
+      { action: "fire", weapon: "tank_shoot", target: forestTankTile },
+      { rng: () => 0.99 });
+    ok(camoHit.ok && camoHit.result.impacts[0].hit === true, "Forest camo does NOT miss when rng above chance");
+
+    // Missile splash on the SAME forest tile ignores camo (always resolves normally).
+    // (Use a fresh match so state is clean; place a B tank on forest again.)
+    const t2 = freshBattle("highland");
+    let fTankTile2 = null;
+    outerF2: for (const tank of t2.players["b"].tanks)
+      for (const tl of tank.tiles)
+        if (t2.map.grid[tl.y][tl.x] === FOREST) { fTankTile2 = tl; break outerF2; }
+    if (!fTankTile2) {
+      let fTile = null;
+      for (let y = t2.map.zoneB.y; y < t2.map.zoneB.y + t2.map.zoneB.h && !fTile; y++)
+        for (let x = t2.map.zoneB.x; x < t2.map.zoneB.x + t2.map.zoneB.w && !fTile; x++)
+          if (t2.map.grid[y][x] === FOREST) fTile = { x, y };
+      ensureTurn(t2, "b");
+      const bl = t2.players["b"].tanks.find((k) => k.type === "light");
+      if (fTile && gl.submitAction(t2, "b", { action: "reposition", tankId: bl.tankId, position: fTile, rotation: 0 }).ok)
+        fTankTile2 = fTile;
+    }
+    if (fTankTile2) {
+      ensureTurn(t2, "a");
+      // Missile centered so the forest-tank tile is the center; rng=0 would trigger
+      // camo IF it applied — it must NOT for splash weapons.
+      const mis = gl.submitAction(t2, "a",
+        { action: "fire", weapon: "missile", target: fTankTile2 },
+        { rng: () => 0.0 });
+      const centerImpact = (mis.result.impacts || []).find((i) => i.x === fTankTile2.x && i.y === fTankTile2.y);
+      ok(mis.ok && centerImpact && centerImpact.hit === true && !mis.result.camoMiss,
+         "Forest camo does NOT apply to Missile splash");
+    }
+  }
+
+  // MUD blocks Reposition destinations.
+  const t3 = freshBattle("highland");
+  const az = t3.map.zoneA;
+  let mudTile = null;
+  for (let y = az.y; y < az.y + az.h && !mudTile; y++)
+    for (let x = az.x; x < az.x + az.w && !mudTile; x++)
+      if (t3.map.grid[y][x] === MUD) mudTile = { x, y };
+  ok(!!mudTile, "found a Mud tile in A's zone");
+  if (mudTile) {
+    ensureTurn(t3, "a");
+    const lite = t3.players["a"].tanks.find((k) => k.type === "light");
+    const blocked = gl.submitAction(t3, "a", { action: "reposition", tankId: lite.tankId, position: mudTile, rotation: 0 });
+    ok(!blocked.ok && /mud/i.test(blocked.error), "Reposition onto Mud is rejected");
+  }
+}
+
+// ==========================================================================
+// PART 4 — Surrender ends the match, opponent wins, reuses game-over
+// ==========================================================================
+{
+  const s = freshBattle("highland");
+  ok(s.phase === "battle", "match in battle before surrender");
+  const res = gl.surrender(s, "a"); // A surrenders
+  ok(res.ok && res.winner === "B", "surrender declares opponent (B) the winner");
+  ok(s.phase === "over" && s.winner === "B", "match ends with B as winner");
+  // Views reflect the win/lose for reusing the existing screen.
+  ok(gl.buildPlayerView(s, "b").winner === "B", "B's view shows B as winner");
+  ok(gl.buildPlayerView(s, "a").winner === "B", "A's view shows B as winner (A lost)");
+  // Cannot surrender outside battle.
+  const s2 = gl.createMatch("S2"); gl.addPlayer(s2, "a");
+  const bad = gl.surrender(s2, "a");
+  ok(!bad.ok, "surrender rejected when not in battle");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

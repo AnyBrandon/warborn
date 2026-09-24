@@ -20,6 +20,8 @@
     /* Prevent browser gesture scrolling/zoom fighting with canvas controls. */
     touch-action: none; overscroll-behavior: none;
   }
+  /* Tactical HUD accent font for labels/badges. */
+  .tac { font-family: 'Consolas', ui-monospace, 'Courier New', monospace; letter-spacing: 1px; }
   #canvas-wrap { position: absolute; inset: 0; touch-action: none; }
   canvas { display: block; touch-action: none; }
 
@@ -64,9 +66,14 @@
     position: absolute; top: 0; left: 0; right: 0;
     padding: calc(8px + var(--sat)) calc(12px + var(--sar)) 8px calc(12px + var(--sal));
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    background: linear-gradient(#0b1220ee, #0b122000); min-height: var(--hud-h);
+    background: linear-gradient(180deg, #0d1826f2, #0d182600);
+    border-bottom: 1px solid #21344d; min-height: var(--hud-h);
+    font-family: 'Consolas', ui-monospace, 'Courier New', monospace;
   }
-  #hud .tag { font-size: clamp(11px, 3vw, 13px); color: #7fd1ff; letter-spacing: 2px; font-weight: 700; }
+  #hud .tag {
+    font-size: clamp(12px, 3.2vw, 14px); color: #7fd1ff; letter-spacing: 3px; font-weight: 700;
+    text-shadow: 0 0 8px rgba(127,209,255,.4);
+  }
   #hud .spacer { flex: 1; }
   #timer { font-size: clamp(18px, 5vw, 22px); font-weight: 700; font-variant-numeric: tabular-nums; }
   #timer.low { color: #ff6b6b; }
@@ -100,7 +107,14 @@
   }
   #hint { color: #9fb2cc; font-size: clamp(12px, 3.4vw, 14px); flex: 1 1 100%; min-width: 0; }
   #actionbar button { flex: 1 1 auto; }
-  .badge { font-size: clamp(11px, 3vw, 12px); padding: 4px 10px; border-radius: 20px; background: #16233a; border: 1px solid #2a3852; }
+  .badge {
+    font-size: clamp(10px, 2.8vw, 12px); padding: 4px 10px; border-radius: 4px;
+    background: #14243a; border: 1px solid #2a3852; letter-spacing: 1px;
+    font-family: 'Consolas', ui-monospace, 'Courier New', monospace;
+  }
+  /* Action bar gets a tactical panel look with a top hairline. */
+  #actionbar { border-top: 1px solid #21344d; backdrop-filter: blur(2px); }
+  #actionbar button, #tray button { border-radius: 5px; letter-spacing: .5px; }
 
   .hidden { display: none !important; }
 
@@ -185,6 +199,19 @@
       <span class="spacer"></span>
       <span id="round" class="hidden"></span>
       <span id="timer" class="hidden">30</span>
+      <button id="surrenderBtn" class="danger hidden" style="min-height:36px;padding:6px 12px;margin-left:8px;">Surrender</button>
+    </div>
+
+    <!-- Surrender confirmation -->
+    <div id="surrenderConfirm" class="center-screen hidden">
+      <div class="card">
+        <h2>Surrender?</h2>
+        <p>Are you sure? This ends the match immediately and hands victory to your opponent.</p>
+        <div class="row">
+          <button id="surrenderCancelBtn" class="secondary">Cancel</button>
+          <button id="surrenderConfirmBtn" class="danger">Confirm Surrender</button>
+        </div>
+      </div>
     </div>
 
     <!-- Lobby -->
@@ -228,15 +255,15 @@
     <!-- Bottom action bar -->
     <div id="actionbar" class="panel hidden">
       <span id="hint"></span>
-      <button id="wpnTankBtn" class="hidden">Tank Shoot</button>
-      <button id="wpnMissileBtn" class="hidden">Missile</button>
-      <button id="wpnBallisticBtn" class="hidden">Ballistic Missile</button>
-      <button id="smokeBtn" class="secondary hidden">Smoke</button>
-      <button id="reconBtn" class="secondary hidden">Recon Sweep</button>
-      <button id="repoBtn" class="secondary hidden">Reposition</button>
-      <button id="rotateActionBtn" class="secondary hidden">Rotate</button>
-      <button id="confirmBtn" class="hidden">Confirm</button>
-      <button id="cancelActionBtn" class="secondary hidden">Cancel</button>
+      <button id="wpnTankBtn" class="hidden">🎯 Tank Shoot</button>
+      <button id="wpnMissileBtn" class="hidden">🚀 Missile</button>
+      <button id="wpnBallisticBtn" class="hidden">☄ Ballistic</button>
+      <button id="smokeBtn" class="secondary hidden">💨 Smoke</button>
+      <button id="reconBtn" class="secondary hidden">📡 Recon</button>
+      <button id="repoBtn" class="secondary hidden">⇄ Reposition</button>
+      <button id="rotateActionBtn" class="secondary hidden">⟳ Rotate</button>
+      <button id="confirmBtn" class="hidden">✓ Confirm</button>
+      <button id="cancelActionBtn" class="secondary hidden">✕ Cancel</button>
     </div>
 
     <!-- Canvas zoom controls (pinch-zoom alternative for touch) -->
@@ -467,6 +494,15 @@
     sendMsg({ type: "play_again" });
   };
 
+  // Surrender flow: button opens a confirm modal; confirm sends to the server,
+  // which ends the match and triggers the normal game_over win/lose screen.
+  $("surrenderBtn").onclick = () => show("surrenderConfirm");
+  $("surrenderCancelBtn").onclick = () => hide("surrenderConfirm");
+  $("surrenderConfirmBtn").onclick = () => {
+    hide("surrenderConfirm");
+    sendMsg({ type: "surrender" });
+  };
+
   // ---- Phase-driven UI render ----------------------------------------------
   let lastPhase = null;
   function renderFromView() {
@@ -481,8 +517,9 @@
       setupMapScreen();
       stopTimer();
       G._framedFor = undefined; // re-frame camera on next deploy/battle
+      hide("surrenderBtn");
     } else if (v.phase === "deploy") {
-      hide("mapscreen"); hide("overScreen");
+      hide("mapscreen"); hide("overScreen"); hide("surrenderBtn");
       show("tray"); hide("actionbar"); show("zoomctl");
       buildTray();
       updateReadyState();
@@ -495,7 +532,7 @@
       }
     } else if (v.phase === "battle") {
       hide("mapscreen"); hide("tray"); hide("overScreen");
-      show("actionbar"); show("zoomctl");
+      show("actionbar"); show("zoomctl"); show("surrenderBtn");
       buildScene();
       updateBattleBar();
       manageTimer();
@@ -508,7 +545,7 @@
     } else if (v.phase === "over") {
       // game_over message handles the screen
       stopTimer();
-      hide("zoomctl");
+      hide("zoomctl"); hide("surrenderBtn"); hide("surrenderConfirm");
     }
 
     updateHud();
@@ -731,7 +768,8 @@
       show(btnId);
       btn.disabled = !st.available;
       // Explain WHY unavailable (grey out + tooltip) rather than hiding it.
-      let label = WEAPON_LABELS[wid];
+      const icon = { tank_shoot: "🎯", missile: "🚀", ballistic: "☄" }[wid];
+      let label = `${icon} ${wid === "ballistic" ? "Ballistic" : WEAPON_LABELS[wid]}`;
       if (wid === "missile") label += ` (${Math.max(0, st.usesLeft)})`;
       else if (wid === "ballistic") label += ` (${Math.max(0, st.usesLeft)})`;
       btn.textContent = label;
@@ -743,7 +781,7 @@
     const smokeBtn = $("smokeBtn");
     show("smokeBtn");
     smokeBtn.disabled = !v.canSmoke;
-    smokeBtn.textContent = `Smoke (${v.smokeCharges})`;
+    smokeBtn.textContent = `💨 Smoke (${v.smokeCharges})`;
     smokeBtn.title = v.canSmoke ? "" : (!v.planeAlive ? "Smoke disabled — plane destroyed" : "No Smoke charges left");
     smokeBtn.classList.toggle("secondary", G.mode !== "smoke");
 
@@ -751,7 +789,7 @@
     const reconBtn = $("reconBtn");
     show("reconBtn");
     reconBtn.disabled = !v.canRecon;
-    reconBtn.textContent = `Recon Sweep (${v.reconUsesLeft})`;
+    reconBtn.textContent = `📡 Recon (${v.reconUsesLeft})`;
     reconBtn.title = v.canRecon ? "" : "Recon Sweep already used this game";
     reconBtn.classList.toggle("secondary", G.mode !== "recon");
 
@@ -831,25 +869,128 @@
 
   // Briefly flash a weapon's impact tiles so the pattern is readable when it
   // lands (color/shape differs per weapon: shot=red dot, missile=orange cross,
-  // ballistic=yellow star). Purely visual; cleared after a moment.
+  // ===========================================================================
+  // Visual effects system (purely cosmetic; no gameplay logic). Each effect is a
+  // mesh + an update fn stepped from the render loop, self-removing when done.
+  // ===========================================================================
+  let effectsGroup = null;
+  const _effects = [];
+  function ensureEffectsGroup() {
+    if (!effectsGroup) { effectsGroup = new THREE.Group(); scene.add(effectsGroup); }
+  }
+  function addEffect(mesh, durationMs, update) {
+    ensureEffectsGroup();
+    effectsGroup.add(mesh);
+    _effects.push({ mesh, t: 0, dur: durationMs / 1000, update });
+  }
+  function stepEffects(dt) {
+    for (let i = _effects.length - 1; i >= 0; i--) {
+      const e = _effects[i];
+      e.t += dt;
+      const k = Math.min(1, e.t / e.dur);
+      if (e.update) e.update(k, e.mesh);
+      if (e.t >= e.dur) {
+        effectsGroup.remove(e.mesh);
+        e.mesh.traverse && e.mesh.traverse((c) => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
+        _effects.splice(i, 1);
+      }
+    }
+  }
+
+  // A quick tracer streak from a source world-point to a target tile.
+  function fxTracer(fromV, toTile, color) {
+    const to = tileToWorld(toTile.x, toTile.y);
+    const from = fromV || { x: to.x, z: to.z - 6 };
+    const geo = new THREE.SphereGeometry(0.14, 6, 6);
+    const mat = new THREE.MeshBasicMaterial({ color });
+    const m = new THREE.Mesh(geo, mat);
+    addEffect(m, 260, (k) => {
+      m.position.set(from.x + (to.x - from.x) * k, 1.2 - k * 0.6, from.z + (to.z - from.z) * k);
+    });
+  }
+  // Explosion: expanding emissive sphere + flash.
+  function fxExplosion(tile, size, color) {
+    const wc = tileToWorld(tile.x, tile.y);
+    const geo = new THREE.SphereGeometry(1, 12, 12);
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 });
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(wc.x, 0.5, wc.z);
+    addEffect(m, 520, (k) => {
+      const s = size * (0.3 + k * 1.1);
+      m.scale.set(s, s, s);
+      m.material.opacity = 0.9 * (1 - k);
+    });
+  }
+  // Miss dust puff.
+  function fxDust(tile) {
+    const wc = tileToWorld(tile.x, tile.y);
+    const geo = new THREE.SphereGeometry(0.4, 8, 8);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xbcae95, transparent: true, opacity: 0.7 });
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(wc.x, 0.4, wc.z);
+    addEffect(m, 500, (k) => { const s = 0.5 + k * 0.9; m.scale.set(s, s * 0.7, s); m.material.opacity = 0.7 * (1 - k); });
+  }
+  // Shockwave ring (for Ballistic).
+  function fxShockwave(tile) {
+    const wc = tileToWorld(tile.x, tile.y);
+    const geo = new THREE.RingGeometry(0.4, 0.7, 32);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffe23a, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(wc.x, 0.3, wc.z);
+    addEffect(m, 700, (k) => { const s = 1 + k * 9; m.scale.set(s, s, s); m.material.opacity = 0.85 * (1 - k); });
+  }
+
+  // Replaces the old flat-dot flash: weapon-appropriate tracer + impact effects.
   function flashImpacts(result) {
     if (result.kind !== "fire" || !result.impacts || !scene) return;
-    const colorByWeapon = { tank_shoot: 0xff3b30, missile: 0xff8c1a, ballistic: 0xffe23a };
-    const color = colorByWeapon[result.weapon] || 0xffffff;
-    const flashGroup = new THREE.Group();
-    for (const im of result.impacts) {
-      const geo = new THREE.SphereGeometry(im.hit ? 0.36 : 0.2, 10, 10);
-      const mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.6 });
-      const mesh = new THREE.Mesh(geo, mat);
-      const wc = tileToWorld(im.x, im.y);
-      mesh.position.set(wc.x, 0.8, wc.z);
-      flashGroup.add(mesh);
+    const w = result.weapon;
+    // Rough "firing origin": near the shooter's side of the map, aimed at center.
+    const center = result.center || result.impacts[0];
+    const origin = { x: tileToWorld(center.x, center.y).x, z: tileToWorld(center.x, center.y).z + (G.view && G.view.myTurn === false ? -8 : 8) };
+
+    if (w === "tank_shoot") {
+      const im = result.impacts[0];
+      fxTracer(origin, center, 0xffe08a);
+      setTimeout(() => { if (im.hit) fxExplosion(im, 1.1, 0xff6b2b); else fxDust(im); }, 240);
+    } else if (w === "missile") {
+      fxTracer(origin, center, 0xff8c1a);
+      setTimeout(() => { result.impacts.forEach((im) => im.hit ? fxExplosion(im, 1.3, 0xff8c1a) : fxDust(im)); }, 240);
+    } else if (w === "ballistic") {
+      // The big moment: shockwave + explosions across the whole star.
+      fxShockwave(center);
+      result.impacts.forEach((im, idx) => setTimeout(() => {
+        fxExplosion(im, im.hit ? 1.6 : 1.1, im.hit ? 0xffd23a : 0xffb84a);
+      }, 120 + idx * 20));
     }
-    scene.add(flashGroup);
-    setTimeout(() => {
-      flashGroup.children.forEach((c) => { c.geometry.dispose(); c.material.dispose(); });
-      scene.remove(flashGroup);
-    }, 1400);
+  }
+
+  // Rising smoke particle stack on an owner-visible smoke tile.
+  function fxSmokeRise(x, y) {
+    const wc = tileToWorld(x, y);
+    for (let i = 0; i < 3; i++) {
+      const geo = new THREE.SphereGeometry(0.35 + i * 0.1, 8, 8);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xc3cad6, transparent: true, opacity: 0.5 });
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(wc.x, 0.6, wc.z);
+      const delay = i * 160;
+      setTimeout(() => addEffect(m, 1600, (k) => {
+        m.position.y = 0.6 + k * 1.6;
+        m.material.opacity = 0.5 * (1 - k);
+        const s = 1 + k * 0.6; m.scale.set(s, s, s);
+      }), delay);
+    }
+  }
+
+  // Subtle scanning sweep over the recon 4x4 while the hacking sequence plays.
+  function fxReconScan(area) {
+    const wc = tileToWorld(area.x + area.w / 2 - 0.5, area.y + area.h / 2 - 0.5);
+    const geo = new THREE.PlaneGeometry(area.w, area.h);
+    const mat = new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(wc.x, 0.5, wc.z);
+    addEffect(m, 5000, (k) => { m.material.opacity = 0.15 + 0.25 * Math.abs(Math.sin(k * Math.PI * 6)); });
   }
 
   // ---- Single-action result feedback ---------------------------------------
@@ -877,9 +1018,11 @@
       toast("Unit repositioned.");
     } else if (result.kind === "smoke" && iActed) {
       toast("Smoke deployed — enemy shots on it will miss (once).");
+      if (result.smokePlaced) fxSmokeRise(result.smokePlaced.x, result.smokePlaced.y); // owner-only effect
     } else if (result.kind === "recon") {
       // Attacker gets the hacking sequence; defender gets the intrusion alert.
-      if (iActed) runHackSequence(result.recon.occupied);
+      // The attacker also sees a subtle 3D scan sweep over the queried 4x4.
+      if (iActed) { if (result.recon.area) fxReconScan(result.recon.area); runHackSequence(result.recon.occupied); }
       else runIntrusionAlert();
     }
 
@@ -981,6 +1124,8 @@
     let m = won ? "All enemy tanks destroyed." : "Your fleet was wiped out.";
     if (msg.reason === "opponent_disconnected") {
       m = won ? "Opponent disconnected — you win by default." : m;
+    } else if (msg.reason === "surrender") {
+      m = won ? "Your opponent surrendered — victory is yours." : "You surrendered the match.";
     }
     $("overMsg").textContent = m;
   }
@@ -1006,23 +1151,119 @@
   // deploy). No second offset board — the enemy zone is fog-of-war shown in its
   // real position on the shared map.
 
+  // ---- Baked procedural textures (canvas-generated, low cost) ---------------
+  // A vertical gradient sky used as the scene background.
+  function makeSkyTexture() {
+    const c = document.createElement("canvas");
+    c.width = 16; c.height = 256;
+    const g = c.getContext("2d");
+    const grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, "#1a2a44");
+    grad.addColorStop(0.5, "#25405f");
+    grad.addColorStop(1, "#3a5570");
+    g.fillStyle = grad; g.fillRect(0, 0, 16, 256);
+    const tex = new THREE.CanvasTexture(c);
+    tex.encoding = THREE.sRGBEncoding;
+    return tex;
+  }
+
+  // Cache of tile-type textures so we build each once (low draw-call friendly).
+  const _texCache = {};
+  function tileTexture(kind) {
+    if (_texCache[kind]) return _texCache[kind];
+    const c = document.createElement("canvas");
+    c.width = 64; c.height = 64;
+    const g = c.getContext("2d");
+    const base = {
+      land:   "#3f5a34", noise: "#33502a",
+      hill:   "#6b6a3a", noise2: "#7d7c46",
+      forest: "#1f3a24",
+      mud:    "#5a4632",
+    };
+    if (kind === "land" || kind === "hill") {
+      g.fillStyle = kind === "hill" ? base.hill : base.land;
+      g.fillRect(0, 0, 64, 64);
+      // speckle noise for grass/rock texture
+      for (let i = 0; i < 260; i++) {
+        g.fillStyle = kind === "hill"
+          ? (Math.random() < 0.5 ? base.noise2 : "#585731")
+          : (Math.random() < 0.5 ? base.noise : "#4a6b3c");
+        const s = 1 + Math.random() * 2;
+        g.fillRect(Math.random() * 64, Math.random() * 64, s, s);
+      }
+    } else if (kind === "forest") {
+      g.fillStyle = base.forest; g.fillRect(0, 0, 64, 64);
+      // little tree-canopy blobs
+      for (let i = 0; i < 22; i++) {
+        g.fillStyle = Math.random() < 0.5 ? "#2c5230" : "#183019";
+        g.beginPath();
+        g.arc(Math.random() * 64, Math.random() * 64, 3 + Math.random() * 4, 0, Math.PI * 2);
+        g.fill();
+      }
+    } else if (kind === "mud") {
+      g.fillStyle = base.mud; g.fillRect(0, 0, 64, 64);
+      for (let i = 0; i < 60; i++) {
+        g.fillStyle = Math.random() < 0.5 ? "#463524" : "#6b5540";
+        g.beginPath();
+        g.arc(Math.random() * 64, Math.random() * 64, 2 + Math.random() * 3, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.encoding = THREE.sRGBEncoding;
+    tex.magFilter = THREE.NearestFilter;
+    _texCache[kind] = tex;
+    return tex;
+  }
+
+  // Shared water shimmer material for void tiles (animated in the render loop).
+  let _waterMat = null;
+  function waterMaterial() {
+    if (_waterMat) return _waterMat;
+    _waterMat = new THREE.MeshStandardMaterial({ color: 0x14324f, transparent: true, opacity: 0.92, metalness: 0.3, roughness: 0.4 });
+    return _waterMat;
+  }
+
   function initThree() {
     const wrap = $("canvas-wrap");
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0b1220);
+    // Gradient "sky" backdrop (cheap: a large inverted sphere with a vertex
+    // gradient) instead of flat black, plus distance fog for depth at edges.
+    scene.background = makeSkyTexture();
+    scene.fog = new THREE.Fog(0x223047, 70, 170);
 
     camera = new THREE.PerspectiveCamera(50, wrap.clientWidth / wrap.clientHeight, 0.1, 1000);
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(wrap.clientWidth, wrap.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Soft shadows (kept cheap: single shadow-casting sun, modest map size).
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputEncoding = THREE.sRGBEncoding;
     wrap.appendChild(renderer.domElement);
 
-    // Lights
-    const amb = new THREE.AmbientLight(0xffffff, 0.75);
+    // Lighting rig: ambient fill + directional "sun" (shadows) + a cool rim light
+    // so units read clearly against the terrain.
+    const amb = new THREE.AmbientLight(0xb8c6d9, 0.55);
     scene.add(amb);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
-    dir.position.set(20, 40, 10);
-    scene.add(dir);
+    const hemi = new THREE.HemisphereLight(0xbcd0ff, 0x2b3a22, 0.45);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xfff2d6, 1.05);
+    sun.position.set(-40, 70, 40);
+    sun.castShadow = true;
+    sun.shadow.mapSize.width = 2048;
+    sun.shadow.mapSize.height = 2048;
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 260;
+    sun.shadow.camera.left = -60;
+    sun.shadow.camera.right = 60;
+    sun.shadow.camera.top = 60;
+    sun.shadow.camera.bottom = -60;
+    sun.shadow.bias = -0.0004;
+    scene.add(sun);
+    const rim = new THREE.DirectionalLight(0x6f9bff, 0.35);
+    rim.position.set(30, 20, -50);
+    scene.add(rim);
 
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -1067,9 +1308,21 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   }
 
+  let _clock = 0;
   function animate() {
     requestAnimationFrame(animate);
+    _clock += 0.016;
     if (controls) controls.update();
+    // Water shimmer: gently oscillate void-tile height + brightness. Cheap.
+    if (_waterTiles && _waterTiles.length) {
+      for (let i = 0; i < _waterTiles.length; i++) {
+        const m = _waterTiles[i];
+        const ph = (m.position.x + m.position.z) * 0.4;
+        m.position.y = -0.12 + Math.sin(_clock * 1.6 + ph) * 0.03;
+      }
+    }
+    // Advance any active visual effects (tracers, explosions, smoke, scan).
+    if (typeof stepEffects === "function") stepEffects(0.016);
     if (renderer) renderer.render(scene, camera);
   }
   function render3D() { /* rendering handled by animate loop */ }
@@ -1161,23 +1414,39 @@
   //   "enemy"   -> inside the opponent's zone (red tint) — fire targets here
   //   "neutral" -> everything else (plain land/hill/void)
   // The tap handlers use this `side` to route placement vs firing.
+  const _waterTiles = []; // for shimmer animation
+  const TILE_KIND = { 1: "land", 2: "hill", 3: "forest", 4: "mud" };
   function buildBoardTiles(grid, myZone, enemyZone) {
-    const geo = new THREE.BoxGeometry(0.96, 0.2, 0.96);
+    _waterTiles.length = 0;
+    const landGeo = new THREE.BoxGeometry(0.98, 0.22, 0.98);
+    const hillGeo = new THREE.BoxGeometry(0.98, 0.6, 0.98);   // hills raised
+    const voidGeo = new THREE.BoxGeometry(1.0, 0.16, 1.0);
     for (let y = 0; y < GRID_H; y++) {
       for (let x = 0; x < GRID_W; x++) {
         const t = grid[y][x];
-        let color = COL_VOID;
-        if (t === 1) color = COL_LAND;
-        else if (t === 2) color = COL_HILL;
-
-        let side = "neutral";
-        if (t !== 0 && inZone(myZone, x, y)) { side = "mine"; color = COL_ZONE_MINE; }
-        else if (t !== 0 && inZone(enemyZone, x, y)) { side = "enemy"; color = COL_ZONE_ENEMY; }
-
-        const mat = new THREE.MeshStandardMaterial({ color });
-        const mesh = new THREE.Mesh(geo, mat);
         const w = tileToWorld(x, y);
-        mesh.position.set(w.x, t === 0 ? -0.1 : 0, w.z);
+        let side = "neutral";
+        if (t !== 0 && inZone(myZone, x, y)) side = "mine";
+        else if (t !== 0 && inZone(enemyZone, x, y)) side = "enemy";
+
+        let mesh;
+        if (t === 0) {
+          // Void = water (animated shimmer material).
+          mesh = new THREE.Mesh(voidGeo, waterMaterial().clone());
+          mesh.position.set(w.x, -0.12, w.z);
+          mesh.receiveShadow = true;
+          _waterTiles.push(mesh);
+        } else {
+          const kind = TILE_KIND[t] || "land";
+          const geo = t === 2 ? hillGeo : landGeo;
+          const mat = new THREE.MeshStandardMaterial({ map: tileTexture(kind), roughness: 0.95, metalness: 0.0 });
+          // Zone tint: multiply the texture by a faint zone color.
+          if (side === "mine") mat.color = new THREE.Color(0x8fb4ff);
+          else if (side === "enemy") mat.color = new THREE.Color(0xff9a9a);
+          mesh = new THREE.Mesh(geo, mat);
+          mesh.position.set(w.x, t === 2 ? 0.2 : 0, w.z);
+          mesh.receiveShadow = true;
+        }
         boardGroup.add(mesh);
         tileMeshes.push({ x, y, side, mesh, playable: t !== 0 });
         mesh.userData = { x, y, side, playable: t !== 0 };
@@ -1185,26 +1454,64 @@
     }
   }
 
+  // Build a low-poly model for a unit class, sized to its footprint (w x h in
+  // tiles). Each class has a distinct silhouette so they're recognizable beyond
+  // color: Command has an antenna + wide hull, Heavy has twin barrels + turret,
+  // Medium has a single turret+barrel, Light is a small fast hull, and the
+  // Transportation Plane has wings + tail (clearly not a tank).
+  function buildUnitModel(tank, w, h) {
+    const g = new THREE.Group();
+    const color = new THREE.Color(TANK_COLORS[tank.type] || "#888");
+    const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.25,
+      transparent: tank.sunk, opacity: tank.sunk ? 0.3 : 1 });
+    const darkMat = new THREE.MeshStandardMaterial({ color: color.clone().multiplyScalar(0.6), roughness: 0.8,
+      transparent: tank.sunk, opacity: tank.sunk ? 0.3 : 1 });
+    const sx = w * 0.82, sz = h * 0.82;
+    const mk = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
+
+    if (tank.type === "plane") {
+      // Fuselage + wings + tail.
+      mk(new THREE.BoxGeometry(sx * 0.35, 0.35, sz * 0.9), bodyMat, 0, 0.45, 0);
+      mk(new THREE.BoxGeometry(sx * 0.95, 0.1, sz * 0.28), darkMat, 0, 0.5, sz * 0.05);   // wings
+      mk(new THREE.BoxGeometry(sx * 0.35, 0.1, sz * 0.18), darkMat, 0, 0.55, -sz * 0.38);  // tailplane
+      mk(new THREE.BoxGeometry(0.12, 0.28, sz * 0.16), darkMat, 0, 0.7, -sz * 0.36);       // tail fin
+      return g;
+    }
+    // Tank hull (all tank classes).
+    const hullH = tank.type === "command" ? 0.42 : tank.type === "heavy" ? 0.4 : tank.type === "medium" ? 0.34 : 0.28;
+    mk(new THREE.BoxGeometry(sx, hullH, sz), bodyMat, 0, hullH / 2 + 0.06, 0);
+    // Tracks (dark strips along the long sides).
+    mk(new THREE.BoxGeometry(sx * 0.16, hullH * 0.7, sz * 1.02), darkMat, -sx * 0.44, hullH * 0.4, 0);
+    mk(new THREE.BoxGeometry(sx * 0.16, hullH * 0.7, sz * 1.02), darkMat, sx * 0.44, hullH * 0.4, 0);
+    // Turret.
+    const turH = 0.26;
+    const turret = mk(new THREE.CylinderGeometry(Math.min(sx, sz) * 0.32, Math.min(sx, sz) * 0.36, turH, 8), darkMat, 0, hullH + 0.06 + turH / 2, 0);
+    // Barrels.
+    const barrelMat = darkMat;
+    if (tank.type === "heavy") {
+      mk(new THREE.BoxGeometry(0.1, 0.1, sz * 0.6), barrelMat, -0.14, hullH + 0.14, sz * 0.5);
+      mk(new THREE.BoxGeometry(0.1, 0.1, sz * 0.6), barrelMat, 0.14, hullH + 0.14, sz * 0.5);
+    } else if (tank.type !== "command") {
+      mk(new THREE.BoxGeometry(0.1, 0.1, sz * 0.55), barrelMat, 0, hullH + 0.14, sz * 0.5);
+    }
+    if (tank.type === "command") {
+      // Command post: no barrel, but an antenna + comms dome.
+      mk(new THREE.SphereGeometry(0.14, 8, 8), bodyMat, 0, hullH + 0.06 + turH + 0.05, 0);
+      mk(new THREE.CylinderGeometry(0.015, 0.015, 0.7, 4), barrelMat, sx * 0.2, hullH + 0.5, -sz * 0.2);
+    }
+    return g;
+  }
+
   function addTankMesh(tank) {
     let [w, h] = tank.footprint;
     if (tank.rotation === 1) [w, h] = [h, w];
-    const geo = new THREE.BoxGeometry(w * 0.9, 0.6, h * 0.9);
-    // The non-combat Transportation Plane is drawn taller/lighter so it reads
-    // as a distinct, important unit (its loss disables Reposition).
-    const isPlane = tank.type === "plane";
-    const color = TANK_COLORS[tank.type] || "#888";
-    const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(color),
-      transparent: tank.sunk,
-      opacity: tank.sunk ? 0.35 : 1,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
+    const model = buildUnitModel(tank, w, h);
     const cx = tank.position.x + w / 2 - 0.5;
     const cy = tank.position.y + h / 2 - 0.5;
     const wc = tileToWorld(cx, cy);
-    mesh.position.set(wc.x, isPlane ? 0.7 : 0.4, wc.z);
-    mesh.userData = { tankId: tank.tankId };
-    tankGroup.add(mesh);
+    model.position.set(wc.x, 0.12, wc.z);
+    model.userData = { tankId: tank.tankId };
+    tankGroup.add(model);
   }
 
   // Hit/miss marker. hit=true -> red sphere; false -> BLACK dot (standardized

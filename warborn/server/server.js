@@ -137,6 +137,8 @@ function handleMessage(socket, raw) {
       return onReady(socket);
     case "submit_action":
       return onSubmitAction(socket, msg);
+    case "surrender":
+      return onSurrender(socket);
     case "play_again":
       return onPlayAgain(socket);
     default:
@@ -309,6 +311,32 @@ function onSubmitAction(socket, msg) {
   clearTurnTimer(match);
   broadcastActionResult(match, res.result);
   if (match.phase === "battle") startTurnTimer(match);
+}
+
+function onSurrender(socket) {
+  const meta = socketMeta.get(socket);
+  if (!meta) return sendError(socket, "Not in a room");
+  const match = rooms.get(meta.roomCode);
+  if (!match) return sendError(socket, "Room not found");
+
+  // Server-authoritative: end the match, award the win to the opponent, and
+  // reuse the normal game_over flow so both clients show the existing win/lose.
+  const res = gl.surrender(match, meta.playerId);
+  if (!res.ok) return sendError(socket, res.error);
+
+  clearTurnTimer(match);
+  for (const playerId of Object.keys(match.players)) {
+    const sock = playerSockets.get(playerId);
+    if (!sock) continue;
+    const view = gl.buildPlayerView(match, playerId);
+    send(sock, { type: "state", view });
+    send(sock, {
+      type: "game_over",
+      winner: match.winner,
+      youWon: view.slot === match.winner,
+      reason: "surrender",
+    });
+  }
 }
 
 function onPlayAgain(socket) {

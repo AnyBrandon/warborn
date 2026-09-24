@@ -18,7 +18,7 @@
 
 const GRID_W = 70;
 const GRID_H = 60;
-const VOID = 0, LAND = 1, HILL = 2;
+const VOID = 0, LAND = 1, HILL = 2, FOREST = 3, MUD = 4;
 
 // ---- Seeded PRNG (mulberry32) ------------------------------------------------
 function mulberry32(seed) {
@@ -117,6 +117,24 @@ function addHills(grid, hillNoise, threshold) {
     for (let x = 0; x < GRID_W; x++)
       if (grid[y][x] === LAND && hillNoise(x / GRID_W, y / GRID_H) > threshold)
         grid[y][x] = HILL;
+}
+
+// Scatter clustered patches of a terrain type onto plain LAND tiles using a
+// dedicated noise field. Only converts LAND (leaves hills/void/existing terrain
+// alone) so features read as distinct patches, not overwriting each other.
+function addTerrain(grid, type, noise, threshold) {
+  for (let y = 0; y < GRID_H; y++)
+    for (let x = 0; x < GRID_W; x++)
+      if (grid[y][x] === LAND && noise(x / GRID_W, y / GRID_H) > threshold)
+        grid[y][x] = type;
+}
+
+// Apply forest + mud patches to a finished land/hill grid. Uses distinct seeds
+// so the two features don't correlate. Thresholds tuned to be "meaningful
+// features, not map-covering" (~8-12% of land each).
+function addForestAndMud(grid, seed) {
+  addTerrain(grid, FOREST, fractal(mulberry32(seed + 101), 4, 8), 0.72);
+  addTerrain(grid, MUD, fractal(mulberry32(seed + 211), 4, 9), 0.72);
 }
 
 // Radial falloff: 1 at (cx,cy), fading to 0 at radius r. Elliptical via sx,sy.
@@ -326,11 +344,15 @@ ${parts.join("\n")}
 }
 
 function stats(def) {
-  let land = 0, hill = 0, voidc = 0;
+  let land = 0, hill = 0, voidc = 0, forest = 0, mud = 0;
   for (const row of def.grid) for (const t of row) {
-    if (t === LAND) land++; else if (t === HILL) hill++; else voidc++;
+    if (t === LAND) land++;
+    else if (t === HILL) hill++;
+    else if (t === FOREST) forest++;
+    else if (t === MUD) mud++;
+    else voidc++;
   }
-  return { land, hill, void: voidc };
+  return { land, hill, forest, mud, void: voidc };
 }
 
 const maps = {
@@ -339,6 +361,12 @@ const maps = {
   highland: genHighland(2024),
   squid: genSquid(9931),
 };
+
+// Overlay Forest + Mud patches onto every template (deterministic per seed).
+const TERRAIN_SEEDS = { isthmus: 1337, archipelago: 4242, highland: 2024, squid: 9931 };
+for (const [id, def] of Object.entries(maps)) {
+  addForestAndMud(def.grid, TERRAIN_SEEDS[id]);
+}
 
 if (require.main === module) {
   const arg = process.argv[2];
@@ -349,7 +377,7 @@ if (require.main === module) {
     for (const [k, v] of Object.entries(maps)) {
       console.error("\n=== " + k + " ===");
       for (const row of v.grid)
-        console.error(row.map((t) => (t === 0 ? "." : t === 1 ? "#" : "^")).join(""));
+        console.error(row.map((t) => (t === 0 ? "." : t === 1 ? "#" : t === 2 ? "^" : t === 3 ? "T" : "~")).join(""));
     }
   } else if (arg === "--write") {
     // Write the baked data module directly as UTF-8 (avoids shell BOM issues).
