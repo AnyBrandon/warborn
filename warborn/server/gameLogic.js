@@ -40,7 +40,11 @@ const TURN_TIME_MS = 30000; // 30 second per-turn timer (single active player)
 // ---------------------------------------------------------------------------
 const MISSILE_MAX_USES = 3;
 const BALLISTIC_MAX_USES = 1;
-const BALLISTIC_RAY_LEN = 4; // each of 8 rays extends 4 tiles from center
+// Each of the 8 rays extends exactly 4 tiles from (and NOT counting) the shared
+// center tile: total = 1 center + 8*4 = 33 tiles.
+const BALLISTIC_RAY_LEN = 4;
+const SMOKE_MAX_CHARGES = 3; // Smoke charges per player per game
+const RECON_SIZE = 3; // Recon Sweep scans a 3x3 area
 
 const WEAPONS = {
   tank_shoot: { id: "tank_shoot", label: "Tank Shoot" },
@@ -181,6 +185,11 @@ function addPlayer(match, playerId) {
       missileLastTurn: -10, // turn number of the player's last Missile use
       ballisticUses: 0, // Ballistic Missile fired count (cap 1)
     },
+    smokeCharges: SMOKE_MAX_CHARGES, // remaining Smoke charges (3 total)
+    activeSmoke: [], // this player's own live smoke tiles: [{x,y}]
+    commandEverHit: false, // set true the first time the Command Tank is hit
+    // Double-shot bookkeeping: how many Tank Shoots taken in the CURRENT turn.
+    shotsThisTurn: 0,
   };
   return slot;
 }
@@ -275,6 +284,27 @@ function commandAlive(player) {
   return player.tanks.some((t) => t.type === "command" && !t.sunk);
 }
 
+// Smoke is gated exactly like Reposition: only while the plane is alive.
+function canSmoke(player) {
+  return planeAlive(player) && player.smokeCharges > 0;
+}
+
+// Does this player still have the Command Tank double-shot perk? True only
+// while the Command Tank has NEVER been hit (distinct from "sunk").
+function hasDoubleShot(player) {
+  return !player.commandEverHit;
+}
+
+// How many Tank Shoots the player is allowed this turn (2 with the perk, else 1).
+function shotsAllowed(player) {
+  return hasDoubleShot(player) ? 2 : 1;
+}
+
+// Is there active (un-popped) smoke on this owner's tile?
+function smokeAt(player, x, y) {
+  return (player.activeSmoke || []).some((s) => s.x === x && s.y === y);
+}
+
 // Compute per-weapon availability + human reason for THIS player at THIS turn.
 // `currentTurn` is match.turn (used for Missile's no-two-in-a-row check).
 // Returns { tank_shoot:{available}, missile:{available, reason, usesLeft},
@@ -349,6 +379,9 @@ function submitAction(match, playerId, action) {
 
 // Advance to the other player's turn (increment round when it returns to first).
 function advanceTurn(match) {
+  // The player whose turn is ending can't have a half-used double-shot carry over.
+  const ending = getPlayerBySlot(match, match.activeSlot);
+  if (ending) ending.shotsThisTurn = 0;
   match.turn += 1;
   const next = opponentSlot(match.activeSlot);
   // A "round" is one turn each; bump round counter when play returns to A-style
@@ -406,6 +439,38 @@ function validateAction(match, player, action) {
     };
   }
 
+  if (action.action === "smoke") {
+    // Gated like Reposition: plane must be alive, and charges must remain.
+    if (!planeAlive(player)) {
+      return { ok: false, error: "Smoke disabled — Transportation Plane destroyed" };
+    }
+    if (player.smokeCharges <= 0) {
+      return { ok: false, error: "No Smoke charges left" };
+    }
+    const { x, y } = action.target || {};
+    if (typeof x !== "number" || typeof y !== "number") {
+      return { ok: false, error: "Smoke needs a target tile" };
+    }
+    const zone = zoneForSlot(match, player.slot);
+    if (!inZone(zone, x, y) || !isPlayable(match.map, x, y)) {
+      return { ok: false, error: "Smoke must be placed on land in your own zone" };
+    }
+    // Cannot re-place on a tile that already has active (un-popped) smoke.
+    if (smokeAt(player, x, y)) {
+      return { ok: false, error: "That tile already has active smoke" };
+    }
+    return { ok: true, action: { slot: player.slot, action: "smoke", target: { x, y } } };
+  }
+
+  if (action.action === "recon") {
+    // Recon Sweep: pick the TOP-LEFT of a 3x3 area on the enemy zone. Unlimited.
+    const { x, y } = action.area || {};
+    if (typeof x !== "number" || typeof y !== "number") {
+      return { ok: false, error: "Recon needs an area" };
+    }
+    return { ok: true, action: { slot: player.slot, action: "recon", area: { x, y } } };
+  }
+
   if (action.action === "reposition") {
     // Plane gate (authoritative): no repositioning once the plane is destroyed.
     if (!canReposition(player)) {
@@ -445,9 +510,9 @@ function validateAction(match, player, action) {
     }
 
     // CANNOT move onto a tile that has already been hit/damaged on own board.
-    const hitSet = player.hits || new Set();
+    const hitMap = player.hits || new Map();
     for (const tl of newTiles) {
-      if (hitSet.has(`${tl.x},${tl.y}`)) {
+      if (hitMap.has(`${tl.x},${tl.y}`)) {
         return { ok: false, error: "Cannot reposition onto a damaged tile" };
       }
     }
@@ -472,20 +537,37 @@ function validateAction(match, player, action) {
 // hitTiles/sunk state, and appends any newly-sunk tank into `result`. Returns
 // { hit }. Shared by all weapons — a splash weapon just calls this per tile.
 function applyHitToTile(match, target, x, y, result) {
-  target.hits.add(`${x},${y}`); // fog-of-war record (idempotent)
+  // SMOKE: if the target has active smoke on this tile, the shot ALWAYS misses,
+  // and the smoke is consumed by this triggering shot (reverts to normal after).
+  const smokeIdx = (target.activeSmoke || []).findIndex((s) => s.x === x && s.y === y);
+  if (smokeIdx !== -1) {
+    target.activeSmoke.splice(smokeIdx, 1); // pop it
+    target.hits.set(`${x},${y}`, false); // recorded as a miss for fog-of-war
+    result.smokePopped = result.smokePopped || [];
+    result.smokePopped.push({ slot: target.slot, x, y });
+    return { hit: false };
+  }
+
   for (const tank of target.tanks) {
     if (tank.sunk) continue;
     if (!tank.tiles.some((t) => t.x === x && t.y === y)) continue;
     if (!tank.hitTiles.some((t) => t.x === x && t.y === y)) {
       tank.hitTiles.push({ x, y });
     }
+    // Command Tank: mark the perk-ending "first hit" (distinct from sunk).
+    if (tank.type === "command" && !target.commandEverHit) {
+      target.commandEverHit = true;
+      result.commandHit = target.slot;
+    }
     if (tank.hitTiles.length >= tank.tiles.length) {
       tank.sunk = true;
       result.sunk.push({ slot: target.slot, tankId: tank.tankId });
       if (tank.type === "plane") result.planeDestroyed = target.slot;
     }
+    target.hits.set(`${x},${y}`, true); // resolved as a hit
     return { hit: true };
   }
+  target.hits.set(`${x},${y}`, false); // resolved as a miss
   return { hit: false };
 }
 
@@ -497,47 +579,68 @@ function applyHitToTile(match, target, x, y, result) {
 // happened, broadcast to both clients.
 function resolveAction(match, act) {
   for (const p of Object.values(match.players)) {
-    if (!p.hits) p.hits = new Set();
+    if (!p.hits) p.hits = new Map(); // "x,y" -> resolved hit (bool)
   }
 
   const result = {
     round: match.round,
     turn: match.turn,
     actorSlot: act.slot,
-    kind: act.action, // "fire" | "reposition" | "pass"
+    kind: act.action, // fire | reposition | smoke | recon | pass
     weapon: act.weapon || null, // which weapon (fire only)
     reposition: null, // {slot, tankId, tiles}
     center: null, // {x,y} aim point (fire only)
     impacts: [], // [{x,y,hit}] every tile the weapon resolved against
     sunk: [], // {slot(owner), tankId}
     planeDestroyed: null, // slot whose plane was just destroyed, if any
+    commandHit: null, // slot whose Command Tank just took its first hit
+    smokePlaced: null, // {slot,x,y} smoke placed this action
+    smokePopped: null, // [{slot,x,y}] smoke consumed by a shot this action
+    recon: null, // {slot, area:{x,y,w,h}, occupied}
   };
 
+  const actor = getPlayerBySlot(match, act.slot);
+
   if (act.action === "reposition") {
-    const player = getPlayerBySlot(match, act.slot);
-    const tank = player.tanks.find((t) => t.tankId === act.tankId);
+    const tank = actor.tanks.find((t) => t.tankId === act.tankId);
     if (tank && !tank.sunk) {
       tank.position = act.position;
       tank.rotation = act.rotation;
       tank.tiles = computeTiles(tank.footprint, act.rotation, act.position);
       result.reposition = { slot: act.slot, tankId: tank.tankId, tiles: tank.tiles };
     }
+  } else if (act.action === "smoke") {
+    // Place a smoke charge on the actor's OWN tile (already validated).
+    actor.smokeCharges -= 1;
+    actor.activeSmoke.push({ x: act.target.x, y: act.target.y });
+    result.smokePlaced = { slot: act.slot, x: act.target.x, y: act.target.y };
+  } else if (act.action === "recon") {
+    // Scan a 3x3 on the enemy zone; binary occupied/empty, no damage, no tile leak.
+    const target = getPlayerBySlot(match, opponentSlot(act.slot));
+    const zone = zoneForSlot(match, target.slot);
+    let occupied = false;
+    for (let dy = 0; dy < RECON_SIZE && !occupied; dy++)
+      for (let dx = 0; dx < RECON_SIZE && !occupied; dx++) {
+        const x = act.area.x + dx, y = act.area.y + dy;
+        if (!inZone(zone, x, y)) continue;
+        if (target.tanks.some((t) => !t.sunk && t.tiles.some((tl) => tl.x === x && tl.y === y)))
+          occupied = true;
+      }
+    result.recon = { slot: act.slot, area: { x: act.area.x, y: act.area.y, w: RECON_SIZE, h: RECON_SIZE }, occupied };
   } else if (act.action === "fire") {
-    const shooter = getPlayerBySlot(match, act.slot);
     const target = getPlayerBySlot(match, opponentSlot(act.slot));
     const zone = zoneForSlot(match, target.slot);
     result.center = { x: act.target.x, y: act.target.y };
 
-    // Update weapon-use bookkeeping (persists across the match).
     if (act.weapon === "missile") {
-      shooter.weapons.missileUses += 1;
-      shooter.weapons.missileLastTurn = match.turn;
+      actor.weapons.missileUses += 1;
+      actor.weapons.missileLastTurn = match.turn;
     } else if (act.weapon === "ballistic") {
-      shooter.weapons.ballisticUses += 1;
+      actor.weapons.ballisticUses += 1;
+    } else if (act.weapon === "tank_shoot") {
+      actor.shotsThisTurn += 1; // count toward the double-shot allowance
     }
 
-    // Compute every tile the weapon pattern touches, then resolve each one
-    // independently. Tiles outside the enemy zone or off the map are skipped.
     const pattern = weaponPattern(act.weapon || "tank_shoot", act.target.x, act.target.y);
     for (const tl of pattern) {
       if (tl.x < 0 || tl.y < 0 || tl.x >= (match.map.grid[0].length) || tl.y >= match.map.grid.length) continue;
@@ -557,8 +660,21 @@ function resolveAction(match, act) {
     }
   }
 
-  // Advance the turn (unless the match just ended).
-  if (match.phase === "battle") advanceTurn(match);
+  // --- Turn continuation vs advance ---
+  // Double-shot: a Tank Shoot does NOT end the turn if the actor still has the
+  // perk AND has shots remaining this turn. Every other action (or the 2nd
+  // shot, or the perk being lost this very shot) ends the turn.
+  const isTankShoot = act.action === "fire" && act.weapon === "tank_shoot";
+  const moreShots =
+    isTankShoot &&
+    hasDoubleShot(actor) && // still have the perk (not lost this shot)
+    actor.shotsThisTurn < shotsAllowed(actor);
+
+  if (match.phase === "battle" && !moreShots) {
+    actor.shotsThisTurn = 0; // reset for next time this player acts
+    advanceTurn(match);
+  }
+  result.turnContinues = moreShots && match.phase === "battle";
 
   result.round = match.round;
   result.turn = match.turn;
@@ -596,13 +712,12 @@ function buildPlayerView(match, playerId) {
   // Otherwise expose only the set of tiles I've fired on and whether each hit.
   let enemyShots = [];
   if (opp) {
-    const enemyHitSet = opp.hits || new Set();
-    for (const key of enemyHitSet) {
+    const enemyHitMap = opp.hits || new Map();
+    // Use the ACTUAL resolved outcome recorded at fire time (not a re-derivation
+    // from occupancy) so smoke-forced misses stay misses in the fog-of-war view.
+    for (const [key, wasHit] of enemyHitMap) {
       const [x, y] = key.split(",").map(Number);
-      const occupied = opp.tanks.some(
-        (t) => t.tiles.some((tl) => tl.x === x && tl.y === y)
-      );
-      enemyShots.push({ x, y, hit: occupied });
+      enemyShots.push({ x, y, hit: wasHit });
     }
   }
   const enemySunkTanks =
@@ -641,6 +756,15 @@ function buildPlayerView(match, playerId) {
     oppPlaneAlive: opp ? planeAlive(opp) : true,
     // Per-weapon availability + reasons for the weapon-select UI.
     weapons: weaponStatus(match, me),
+    // Smoke (mine only — NEVER leak my smoke to the enemy's fog-of-war view):
+    smokeCharges: me.smokeCharges,
+    canSmoke: canSmoke(me),
+    mySmoke: (me.activeSmoke || []).map((s) => ({ x: s.x, y: s.y })),
+    // Command Tank double-shot perk:
+    doubleShot: hasDoubleShot(me),
+    shotsThisTurn: me.shotsThisTurn,
+    shotsAllowed: shotsAllowed(me),
+    commandEverHit: me.commandEverHit,
   };
 }
 
@@ -656,8 +780,12 @@ function resetMatch(match) {
   for (const p of Object.values(match.players)) {
     p.ready = false;
     p.tanks = buildRosterInstances();
-    p.hits = new Set();
+    p.hits = new Map();
     p.weapons = { missileUses: 0, missileLastTurn: -10, ballisticUses: 0 };
+    p.smokeCharges = SMOKE_MAX_CHARGES;
+    p.activeSmoke = [];
+    p.commandEverHit = false;
+    p.shotsThisTurn = 0;
   }
 }
 
@@ -665,10 +793,16 @@ module.exports = {
   TANK_ROSTER,
   TURN_TIME_MS,
   WEAPONS,
+  SMOKE_MAX_CHARGES,
+  RECON_SIZE,
   weaponPattern,
   weaponStatus,
   heavyAlive,
   commandAlive,
+  canSmoke,
+  hasDoubleShot,
+  shotsAllowed,
+  smokeAt,
   createMatch,
   addPlayer,
   getPlayerBySlot,

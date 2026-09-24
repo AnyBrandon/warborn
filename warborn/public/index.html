@@ -116,6 +116,35 @@
   .maplist button { text-align: left; background: #16233a; }
   .maplist button.sel { background: #1d4ed8; }
 
+  /* ---- Recon Sweep: hacker-terminal + intrusion overlays ---- */
+  #hackScreen, #intrusionScreen { background: rgba(2,6,4,0.94); z-index: 60; }
+  .hackbox {
+    width: 560px; max-width: 94vw; background: #030a06; border: 1px solid #1f7a3a;
+    border-radius: 8px; box-shadow: 0 0 40px rgba(34,197,94,.25), inset 0 0 60px rgba(0,40,0,.6);
+    font-family: 'Courier New', monospace; color: #4ade80; overflow: hidden;
+  }
+  .hackbar { background: #06160c; border-bottom: 1px solid #14532d; padding: 8px 12px; font-size: 12px; letter-spacing: 1px; color: #86efac; }
+  .hackbar .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; margin-right: 8px; box-shadow: 0 0 8px #22c55e; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  #hackLog, #intrusionLog {
+    margin: 0; padding: 16px; min-height: 200px; font-size: clamp(12px, 3.4vw, 15px);
+    line-height: 1.5; white-space: pre-wrap; word-break: break-word; text-shadow: 0 0 6px currentColor;
+  }
+  .hackprog { height: 8px; background: #06160c; margin: 0 16px; border: 1px solid #14532d; border-radius: 4px; overflow: hidden; }
+  #hackProgFill { height: 100%; width: 0%; background: linear-gradient(90deg,#14532d,#22c55e); transition: width .2s linear; }
+  .hackresult { padding: 14px 16px 18px; font-size: clamp(14px, 4vw, 18px); font-weight: 700; letter-spacing: 1px; min-height: 26px; }
+  .hackresult.hostile { color: #ff5555; text-shadow: 0 0 10px #ff2222; }
+  .hackresult.clear { color: #4ade80; text-shadow: 0 0 10px #22c55e; }
+
+  .intrusionbox {
+    width: 520px; max-width: 92vw; background: #120303; border: 2px solid #b91c1c; border-radius: 8px;
+    box-shadow: 0 0 50px rgba(220,38,38,.5); font-family: 'Courier New', monospace; color: #ff6b6b;
+    padding: 20px; text-align: center; animation: intrusionPulse 0.8s ease-in-out infinite alternate;
+  }
+  @keyframes intrusionPulse { from { box-shadow: 0 0 30px rgba(220,38,38,.35); } to { box-shadow: 0 0 70px rgba(220,38,38,.75); } }
+  .intrusion-glyph { font-size: 44px; margin-bottom: 8px; animation: blink 0.6s steps(2) infinite; }
+  #intrusionLog { color: #ff6b6b; text-align: left; }
+
   /* Floating zoom controls for the canvas (pinch-zoom alternative on touch). */
   #zoomctl {
     position: absolute; left: calc(10px + var(--sal)); bottom: calc(80px + var(--sab));
@@ -151,6 +180,8 @@
       <span id="roomtag" class="badge"></span>
       <span id="slottag" class="badge"></span>
       <span id="zonetag" class="badge"></span>
+      <span id="perktag" class="badge hidden">⚡ DOUBLE-SHOT</span>
+      <span id="smoketag" class="badge hidden"></span>
       <span class="spacer"></span>
       <span id="round" class="hidden"></span>
       <span id="timer" class="hidden">30</span>
@@ -200,6 +231,8 @@
       <button id="wpnTankBtn" class="hidden">Tank Shoot</button>
       <button id="wpnMissileBtn" class="hidden">Missile</button>
       <button id="wpnBallisticBtn" class="hidden">Ballistic Missile</button>
+      <button id="smokeBtn" class="secondary hidden">Smoke</button>
+      <button id="reconBtn" class="secondary hidden">Recon Sweep</button>
       <button id="repoBtn" class="secondary hidden">Reposition</button>
       <button id="rotateActionBtn" class="secondary hidden">Rotate</button>
       <button id="confirmBtn" class="hidden">Confirm</button>
@@ -222,6 +255,24 @@
         <h1 id="overTitle">VICTORY</h1>
         <p id="overMsg"></p>
         <button id="againBtn" style="width:100%;">Play Again</button>
+      </div>
+    </div>
+
+    <!-- Recon Sweep: attacker's cyber-intrusion sequence -->
+    <div id="hackScreen" class="center-screen hidden">
+      <div class="hackbox">
+        <div class="hackbar"><span class="dot"></span> WARBORN // INTRUSION SUITE v3.7</div>
+        <pre id="hackLog"></pre>
+        <div class="hackprog"><div id="hackProgFill"></div></div>
+        <div id="hackResult" class="hackresult"></div>
+      </div>
+    </div>
+
+    <!-- Recon Sweep: defender's intrusion-detected alert -->
+    <div id="intrusionScreen" class="center-screen hidden">
+      <div class="intrusionbox">
+        <div class="intrusion-glyph">⚠</div>
+        <pre id="intrusionLog"></pre>
       </div>
     </div>
 
@@ -260,6 +311,8 @@
     repoDest: null,       // {x,y} chosen reposition destination (pending confirm)
     fireTarget: null,     // {x,y} chosen fire tile (pending tap-then-confirm)
     weapon: "tank_shoot", // selected weapon when in fire mode
+    smokeTile: null,      // {x,y} staged smoke tile (pending confirm)
+    reconArea: null,      // {x,y} staged recon 3x3 top-left (pending confirm)
 
     // timer
     timerInterval: null,
@@ -477,10 +530,17 @@
       $("zonetag").textContent = v.myTurn ? "YOUR TURN" : "OPPONENT'S TURN";
       $("zonetag").style.color = v.myTurn ? "#4ade80" : "#ff9f6b";
       show("round"); $("round").textContent = "ROUND " + v.round;
+      // Double-shot perk indicator (active until Command Tank first hit).
+      if (v.doubleShot) { show("perktag"); $("perktag").style.color = "#facc15"; }
+      else if (v.commandEverHit) {
+        show("perktag"); $("perktag").textContent = "DOUBLE-SHOT LOST"; $("perktag").style.color = "#7f8ea8";
+      } else hide("perktag");
+      // Smoke charges indicator.
+      show("smoketag"); $("smoketag").textContent = `SMOKE ${v.smokeCharges}`;
     } else {
       $("zonetag").textContent = "";
       $("zonetag").style.color = "";
-      hide("round");
+      hide("round"); hide("perktag"); hide("smoketag");
     }
   }
 
@@ -577,6 +637,25 @@
   $("wpnMissileBtn").addEventListener("pointerup", () => enterFireMode("missile"));
   $("wpnBallisticBtn").addEventListener("pointerup", () => enterFireMode("ballistic"));
 
+  $("smokeBtn").addEventListener("pointerup", () => {
+    if (G.view && !G.view.canSmoke) {
+      const why = !G.view.planeAlive ? "Transportation Plane destroyed" : "no charges left";
+      toast(`Smoke unavailable: ${why}.`);
+      return;
+    }
+    G.mode = "smoke";
+    G.smokeTile = null; G.fireTarget = null; G.repoTankId = null; G.repoDest = null; G.reconArea = null;
+    clearGhost();
+    updateBattleBar();
+    toast("Tap a tile in YOUR zone to lay smoke, then Confirm.");
+  });
+  $("reconBtn").addEventListener("pointerup", () => {
+    G.mode = "recon";
+    G.reconArea = null; G.fireTarget = null; G.smokeTile = null; G.repoTankId = null; G.repoDest = null;
+    clearGhost();
+    updateBattleBar();
+    toast("Tap the ENEMY zone to center a 3x3 intrusion scan, then Confirm.");
+  });
   $("repoBtn").addEventListener("pointerup", () => {
     // Guard: no reposition once the Transportation Plane is destroyed.
     if (G.view && !G.view.canReposition) {
@@ -584,7 +663,7 @@
       return;
     }
     G.mode = "reposition";
-    G.repoTankId = null; G.repoDest = null; G.fireTarget = null;
+    G.repoTankId = null; G.repoDest = null; G.fireTarget = null; G.smokeTile = null; G.reconArea = null;
     clearGhost();
     updateBattleBar();
     toast("Tap one of YOUR tanks, then a destination, then Confirm.");
@@ -597,10 +676,11 @@
 
   function resetActionSelection() {
     G.mode = null; G.repoTankId = null; G.repoDest = null; G.fireTarget = null;
+    G.smokeTile = null; G.reconArea = null;
     clearGhost();
   }
 
-  // Submit whatever the player has staged (fire target + weapon, or reposition).
+  // Submit whatever the player has staged.
   function submitSelectedAction() {
     if (G.mode === "fire" && G.fireTarget) {
       sendMsg({ type: "submit_action", action: "fire", weapon: G.weapon, target: G.fireTarget });
@@ -609,6 +689,10 @@
         type: "submit_action", action: "reposition",
         tankId: G.repoTankId, position: G.repoDest, rotation: G.repoRotation,
       });
+    } else if (G.mode === "smoke" && G.smokeTile) {
+      sendMsg({ type: "submit_action", action: "smoke", target: G.smokeTile });
+    } else if (G.mode === "recon" && G.reconArea) {
+      sendMsg({ type: "submit_action", action: "recon", area: G.reconArea });
     } else {
       toast("Select a target first.");
     }
@@ -617,13 +701,16 @@
   function updateBattleBar() {
     const v = G.view;
     const anySel = (G.mode === "fire" && G.fireTarget) ||
-                   (G.mode === "reposition" && G.repoTankId && G.repoDest);
+                   (G.mode === "reposition" && G.repoTankId && G.repoDest) ||
+                   (G.mode === "smoke" && G.smokeTile) ||
+                   (G.mode === "recon" && G.reconArea);
 
     const weaponBtns = ["wpnTankBtn","wpnMissileBtn","wpnBallisticBtn"];
+    const extraBtns = ["smokeBtn","reconBtn"];
 
     // Not your turn: hide all action controls; the wait overlay handles messaging.
     if (!v.myTurn) {
-      [...weaponBtns, "repoBtn","cancelActionBtn","rotateActionBtn","confirmBtn"].forEach(hide);
+      [...weaponBtns, ...extraBtns, "repoBtn","cancelActionBtn","rotateActionBtn","confirmBtn"].forEach(hide);
       $("hint").textContent = "Opponent is taking their turn...";
       return;
     }
@@ -646,6 +733,19 @@
       btn.classList.toggle("secondary", !(G.mode === "fire" && G.weapon === wid));
     }
 
+    // Smoke button — gated on plane alive + charges (server-authoritative).
+    const smokeBtn = $("smokeBtn");
+    show("smokeBtn");
+    smokeBtn.disabled = !v.canSmoke;
+    smokeBtn.textContent = `Smoke (${v.smokeCharges})`;
+    smokeBtn.title = v.canSmoke ? "" : (!v.planeAlive ? "Smoke disabled — plane destroyed" : "No Smoke charges left");
+    smokeBtn.classList.toggle("secondary", G.mode !== "smoke");
+
+    // Recon Sweep — always available.
+    const reconBtn = $("reconBtn");
+    show("reconBtn");
+    reconBtn.classList.toggle("secondary", G.mode !== "recon");
+
     // Reposition is gated on the Transportation Plane being alive.
     const repoBtn = $("repoBtn");
     show("repoBtn");
@@ -666,8 +766,17 @@
       if (!G.repoTankId) $("hint").textContent = "Tap one of your tanks to move.";
       else if (!G.repoDest) $("hint").textContent = "Tap a destination tile in your zone. Rotate to turn.";
       else $("hint").textContent = "Destination set. Tap Confirm to move.";
+    } else if (G.mode === "smoke") {
+      $("hint").textContent = G.smokeTile
+        ? `Smoke staged at (${G.smokeTile.x}, ${G.smokeTile.y}). Tap Confirm.`
+        : "SMOKE: tap a tile in YOUR zone (hidden defensive trap).";
+    } else if (G.mode === "recon") {
+      $("hint").textContent = G.reconArea
+        ? "3x3 scan area set. Tap Confirm to launch intrusion."
+        : "RECON: tap the ENEMY zone to center a 3x3 scan.";
     } else {
-      $("hint").textContent = "Your turn — pick a weapon or Reposition.";
+      const dbl = v.doubleShot ? " (Double-Shot active — 2 Tank Shoots)" : "";
+      $("hint").textContent = `Your turn — pick an action.${dbl}`;
     }
   }
 
@@ -748,16 +857,95 @@
       toast(iActed ? "You ran out of time — turn passed." : "Opponent's turn timed out.");
     } else if (result.kind === "reposition" && iActed) {
       toast("Unit repositioned.");
+    } else if (result.kind === "smoke" && iActed) {
+      toast("Smoke deployed — enemy shots on it will miss (once).");
+    } else if (result.kind === "recon") {
+      // Attacker gets the hacking sequence; defender gets the intrusion alert.
+      if (iActed) runHackSequence(result.recon.occupied);
+      else runIntrusionAlert();
     }
 
     // Plane-destroyed callout (affects whoever lost their plane).
     if (result.planeDestroyed) {
       if (result.planeDestroyed === G.slot) {
-        toast("Your Transportation Plane is destroyed — Reposition disabled!");
+        toast("Your Transportation Plane is destroyed — Reposition & Smoke disabled!");
       } else {
-        toast("Enemy Transportation Plane destroyed — they can no longer reposition.");
+        toast("Enemy Transportation Plane destroyed — no more reposition/smoke for them.");
       }
     }
+    // Command Tank first-hit callout (double-shot perk lost).
+    if (result.commandHit) {
+      if (result.commandHit === G.slot) toast("Command Tank hit — Double-Shot perk lost!");
+      else toast("Enemy Command Tank hit — their Double-Shot is gone.");
+    }
+    if (result.smokePopped && result.smokePopped.some((s) => s.slot === G.slot)) {
+      toast("Your smoke absorbed an enemy shot and dissipated.");
+    }
+  }
+
+  // ---- Recon Sweep themed sequences -----------------------------------------
+  // Attacker: ~5s hacker-terminal intrusion, then the binary result revealed.
+  function runHackSequence(occupied) {
+    show("hackScreen");
+    const log = $("hackLog");
+    const fill = $("hackProgFill");
+    const res = $("hackResult");
+    log.textContent = ""; res.textContent = ""; res.className = "hackresult"; fill.style.width = "0%";
+    const lines = [
+      "> initiating covert uplink...",
+      "> BREACHING ENEMY COMMS ARRAY [OK]",
+      "> bypassing ICE // rotating cipher keys...",
+      "> DECRYPTING GRID TELEMETRY ▓▓▓▓░░░░",
+      "> injecting packet sniffer into sector bus...",
+      "> EXTRACTING SECTOR DATA ▓▓▓▓▓▓▓▓",
+      "> correlating thermal + motion signatures...",
+    ];
+    let i = 0;
+    const total = 5000;
+    const step = Math.floor(total / lines.length);
+    const t0 = Date.now();
+    const progTimer = setInterval(() => {
+      fill.style.width = Math.min(100, ((Date.now() - t0) / total) * 100) + "%";
+    }, 100);
+    const lineTimer = setInterval(() => {
+      if (i < lines.length) { log.textContent += lines[i++] + "\n"; }
+    }, step);
+    setTimeout(() => {
+      clearInterval(progTimer); clearInterval(lineTimer);
+      fill.style.width = "100%";
+      if (occupied) {
+        res.textContent = ">> TARGET CONFIRMED: HOSTILE SIGNATURE DETECTED IN SECTOR <<";
+        res.className = "hackresult hostile";
+      } else {
+        res.textContent = ">> SECTOR CLEAR — NO HOSTILE SIGNATURE <<";
+        res.className = "hackresult clear";
+      }
+      setTimeout(() => hide("hackScreen"), 2600);
+    }, total);
+  }
+
+  // Defender: intrusion-detected warning, shown for the same window.
+  function runIntrusionAlert() {
+    show("intrusionScreen");
+    const log = $("intrusionLog");
+    log.textContent = "";
+    const lines = [
+      "⚠ UNAUTHORIZED INTRUSION DETECTED ⚠",
+      "",
+      "> hostile process scanning your grid...",
+      "> ENEMY IS TRACING YOUR POSITIONS",
+      "> countermeasures offline // unable to block",
+      "> they are reading a 3x3 sector of your defenses",
+      "",
+      "hold the line, commander.",
+    ];
+    let i = 0;
+    const step = Math.floor(5000 / lines.length);
+    const lineTimer = setInterval(() => {
+      if (i < lines.length) log.textContent += lines[i++] + "\n";
+    }, step);
+    setTimeout(() => { clearInterval(lineTimer); }, 5000);
+    setTimeout(() => hide("intrusionScreen"), 5000 + 1500);
   }
 
   // ---- Game over ------------------------------------------------------------
@@ -916,6 +1104,9 @@
     v.myTanks.forEach((t) => {
       (t.hitTiles || []).forEach((h) => addMarker(h.x, h.y, true));
     });
+    // My OWN active smoke tiles — visible only to me (server never sends the
+    // enemy's smoke, so it stays a hidden defensive trap on their view).
+    (v.mySmoke || []).forEach((s) => addSmokeTile(s.x, s.y));
 
     // Battle: enemy zone is fog-of-war IN ITS REAL POSITION on this same map.
     if (battle) {
@@ -1015,6 +1206,20 @@
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(w.x, 0.25, w.z);
     markerGroup.add(mesh);
+  }
+
+  // A soft translucent puff marking one of MY active smoke tiles (owner-only).
+  function addSmokeTile(x, y) {
+    const w = tileToWorld(x, y);
+    const grp = new THREE.Group();
+    for (let i = 0; i < 3; i++) {
+      const geo = new THREE.SphereGeometry(0.4 + i * 0.12, 8, 8);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xc3cad6, transparent: true, opacity: 0.35 });
+      const puff = new THREE.Mesh(geo, mat);
+      puff.position.set(w.x + (i - 1) * 0.2, 0.5 + i * 0.15, w.z + (i - 1) * 0.15);
+      grp.add(puff);
+    }
+    markerGroup.add(grp);
   }
 
   // Frame camera over the relevant board(s). We keep the camera framing stable
@@ -1219,6 +1424,17 @@
       G.fireTarget = { x: picked.x, y: picked.y };
       clearGhost(); drawAimGhost(G.fireTarget);
       updateBattleBar();
+    } else if (G.mode === "smoke") {
+      if (picked.side !== "mine") { toast("Smoke goes in YOUR zone (blue)."); return; }
+      G.smokeTile = { x: picked.x, y: picked.y };
+      clearGhost(); drawSmokeGhost(G.smokeTile);
+      updateBattleBar();
+    } else if (G.mode === "recon") {
+      if (picked.side !== "enemy") { toast("Scan the ENEMY zone (red)."); return; }
+      // Center the 3x3 on the tapped tile (store top-left).
+      G.reconArea = { x: picked.x - 1, y: picked.y - 1 };
+      clearGhost(); drawReconGhost(G.reconArea);
+      updateBattleBar();
     } else if (G.mode === "reposition") {
       if (picked.side !== "mine") { toast("Reposition within YOUR zone (blue)."); return; }
       if (!G.repoTankId) {
@@ -1238,8 +1454,31 @@
         updateBattleBar();
       }
     } else {
-      toast("Pick Fire or Reposition first.");
+      toast("Pick an action first.");
     }
+  }
+
+  // Ghost preview for a staged smoke tile (blue-grey translucent puff).
+  function drawSmokeGhost(tile) {
+    const geo = new THREE.SphereGeometry(0.5, 10, 10);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xaab4c4, transparent: true, opacity: 0.55 });
+    const mesh = new THREE.Mesh(geo, mat);
+    const wc = tileToWorld(tile.x, tile.y);
+    mesh.position.set(wc.x, 0.6, wc.z);
+    ghostGroup.add(mesh);
+  }
+
+  // Ghost preview for a staged 3x3 recon area (cyan outline tiles).
+  function drawReconGhost(area) {
+    for (let dy = 0; dy < 3; dy++)
+      for (let dx = 0; dx < 3; dx++) {
+        const geo = new THREE.BoxGeometry(0.85, 0.14, 0.85);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.5, emissive: 0x066b78 });
+        const mesh = new THREE.Mesh(geo, mat);
+        const wc = tileToWorld(area.x + dx, area.y + dy);
+        mesh.position.set(wc.x, 0.4, wc.z);
+        ghostGroup.add(mesh);
+      }
   }
 
   // ---- Canvas zoom controls (touch-friendly pinch alternative) -------------

@@ -275,5 +275,169 @@ ok(wv.weapons && wv.weapons.tank_shoot.available === true, "view weapons: tank_s
 ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballistic.reason),
    "view weapons: ballistic unavailable with reason");
 
+// ==========================================================================
+// PART 1 — Ballistic ray length (exactly 4 tiles per ray)
+// ==========================================================================
+{
+  const pat = keySet(gl.weaponPattern("ballistic", 30, 30));
+  // Along +x: 31,32,33,34 present; 35 (5th) absent.
+  ok(pat.has("34,30") && !pat.has("35,30"), "Ballistic +x ray is exactly 4 long");
+  ok(pat.has("26,30") && !pat.has("25,30"), "Ballistic -x ray is exactly 4 long");
+  ok(pat.has("34,34") && !pat.has("35,35"), "Ballistic diagonal ray is exactly 4 long");
+  ok(pat.size === 33, "Ballistic total is 33 tiles (1 + 8*4)");
+}
+
+// ==========================================================================
+// PART 2 — Smoke Round
+// ==========================================================================
+{
+  const s = freshBattle("highland");
+  const az = s.map.zoneA, bz = s.map.zoneB;
+  // Find an empty land tile in A's zone for smoke placement.
+  const aOcc = new Set();
+  s.players["a"].tanks.forEach((t) => t.tiles.forEach((tl) => aOcc.add(`${tl.x},${tl.y}`)));
+  let smokeTile = null;
+  outerS: for (let y = az.y; y < az.y + az.h; y++)
+    for (let x = az.x; x < az.x + az.w; x++) {
+      const t = s.map.grid[y][x];
+      if ((t === 1 || t === 2) && !aOcc.has(`${x},${y}`)) { smokeTile = { x, y }; break outerS; }
+    }
+
+  ensureTurn(s, "a");
+  ok(gl.buildPlayerView(s, "a").smokeCharges === 3, "smoke starts at 3 charges");
+  const sm = gl.submitAction(s, "a", { action: "smoke", target: smokeTile });
+  ok(sm.ok && sm.result.smokePlaced, "smoke placed on own zone");
+  ok(s.players["a"].smokeCharges === 2, "smoke charge decremented");
+  ok(gl.smokeAt(s.players["a"], smokeTile.x, smokeTile.y), "smoke active on tile");
+
+  // Cannot re-place on an active smoke tile.
+  ensureTurn(s, "a");
+  const dup = gl.submitAction(s, "a", { action: "smoke", target: smokeTile });
+  ok(!dup.ok && /active smoke/i.test(dup.error), "cannot re-place on active smoke");
+
+  // One smoke per turn is inherent (it consumes the action); place elsewhere ok.
+  // Put a tank ON a fresh smoke tile to prove smoke forces a miss then pops.
+  // Move one of A's light tanks onto a known tile, then A smokes that tile.
+  const s2 = freshBattle("highland");
+  ensureTurn(s2, "a");
+  // pick A's command tank first tile as the "under smoke" test tile
+  const aCmdTank = s2.players["a"].tanks.find((t) => t.type === "command");
+  const underTile = aCmdTank.tiles[0];
+  // A places smoke on that occupied tile (own zone, own tank there — allowed).
+  const sp = gl.submitAction(s2, "a", { action: "smoke", target: underTile });
+  ok(sp.ok, "smoke placed over own occupied tile");
+  // B fires that tile: must MISS (smoke), and smoke pops.
+  ensureTurn(s2, "b");
+  const bShot = gl.submitAction(s2, "b", { action: "fire", weapon: "tank_shoot", target: underTile });
+  ok(bShot.ok && bShot.result.impacts[0].hit === false, "shot on smoke tile forced to MISS");
+  ok(bShot.result.smokePopped && bShot.result.smokePopped.length === 1, "smoke popped by the shot");
+  ok(!gl.smokeAt(s2.players["a"], underTile.x, underTile.y), "smoke cleared after pop");
+  ok(!aCmdTank.hitTiles.some((h) => h.x === underTile.x && h.y === underTile.y), "no damage recorded under smoke");
+  // Next shot on the same tile now resolves normally (hits the command tank).
+  ensureTurn(s2, "b");
+  const bShot2 = gl.submitAction(s2, "b", { action: "fire", weapon: "tank_shoot", target: underTile });
+  ok(bShot2.ok && bShot2.result.impacts[0].hit === true, "future shot on popped tile resolves normally (HIT)");
+
+  // Smoke plane gate: sink A's plane, smoke becomes unavailable.
+  const s3 = freshBattle("highland");
+  for (const tile of s3.players["a"].tanks.find((t) => t.type === "plane").tiles) {
+    ensureTurn(s3, "b"); gl.submitAction(s3, "b", { action: "fire", target: tile });
+  }
+  ensureTurn(s3, "a");
+  const noSmoke = gl.submitAction(s3, "a", { action: "smoke", target: smokeTile });
+  ok(!noSmoke.ok && /plane/i.test(noSmoke.error), "smoke rejected once plane destroyed");
+  ok(gl.buildPlayerView(s3, "a").canSmoke === false, "view.canSmoke false after plane destroyed");
+
+  // Smoke 3-charge cap.
+  const s4 = freshBattle("highland");
+  let placed = 0, capErr = null;
+  const az4 = s4.map.zoneA;
+  const a4Occ = new Set();
+  s4.players["a"].tanks.forEach((t) => t.tiles.forEach((tl) => a4Occ.add(`${tl.x},${tl.y}`)));
+  const spots = [];
+  for (let y = az4.y; y < az4.y + az4.h && spots.length < 6; y++)
+    for (let x = az4.x; x < az4.x + az4.w && spots.length < 6; x++) {
+      const t = s4.map.grid[y][x];
+      if ((t === 1 || t === 2) && !a4Occ.has(`${x},${y}`)) spots.push({ x, y });
+    }
+  for (const spot of spots) {
+    ensureTurn(s4, "a");
+    const r = gl.submitAction(s4, "a", { action: "smoke", target: spot });
+    if (r.ok) placed++;
+    else if (/no smoke charges/i.test(r.error)) { capErr = r.error; break; }
+  }
+  ok(placed === 3 && !!capErr, "smoke capped at 3 charges per game");
+}
+
+// ==========================================================================
+// PART 3 — Recon Sweep (binary, no tile leak)
+// ==========================================================================
+{
+  const r = freshBattle("highland");
+  const bTankTile = r.players["b"].tanks[0].tiles[0];
+  // 3x3 area whose top-left puts bTankTile inside it.
+  ensureTurn(r, "a");
+  const occ = gl.submitAction(r, "a", { action: "recon", area: { x: bTankTile.x - 1, y: bTankTile.y - 1 } });
+  ok(occ.ok && occ.result.recon.occupied === true, "recon over enemy unit = occupied");
+  ok(occ.result.recon.area && occ.result.recon.area.w === 3, "recon reports 3x3 area, not exact tile");
+  // No per-tile leak: result exposes only a boolean + the queried area.
+  ok(!("tiles" in occ.result.recon) && !("hitTile" in occ.result.recon), "recon does not leak which tile");
+
+  // Empty area: scan a far corner of the enemy zone unlikely to hold a unit.
+  const bz = r.map.zoneB;
+  // find a 3x3 in zone B with no enemy tank tiles
+  const bOcc = new Set();
+  r.players["b"].tanks.forEach((t) => t.tiles.forEach((tl) => bOcc.add(`${tl.x},${tl.y}`)));
+  let emptyArea = null;
+  outerR: for (let y = bz.y; y <= bz.y + bz.h - 3; y++)
+    for (let x = bz.x; x <= bz.x + bz.w - 3; x++) {
+      let any = false;
+      for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++)
+        if (bOcc.has(`${x+dx},${y+dy}`)) any = true;
+      if (!any) { emptyArea = { x, y }; break outerR; }
+    }
+  ensureTurn(r, "a");
+  const emp = gl.submitAction(r, "a", { action: "recon", area: emptyArea });
+  ok(emp.ok && emp.result.recon.occupied === false, "recon over empty area = empty");
+}
+
+// ==========================================================================
+// PART 4 — Command Tank double-shot perk
+// ==========================================================================
+{
+  const d = freshBattle("highland");
+  ensureTurn(d, "a");
+  const view0 = gl.buildPlayerView(d, "a");
+  ok(view0.doubleShot === true && view0.shotsAllowed === 2, "double-shot active before any Command hit");
+
+  // First Tank Shoot must NOT end A's turn (perk lets them shoot again).
+  const aim = { x: d.map.zoneB.x + 4, y: d.map.zoneB.y + 4 };
+  const shot1 = gl.submitAction(d, "a", { action: "fire", weapon: "tank_shoot", target: aim });
+  ok(shot1.ok && shot1.result.turnContinues === true && d.activeSlot === "A", "1st Tank Shoot keeps A's turn");
+  const shot2 = gl.submitAction(d, "a", { action: "fire", weapon: "tank_shoot", target: aim });
+  ok(shot2.ok && shot2.result.turnContinues === false && d.activeSlot === "B", "2nd Tank Shoot ends A's turn");
+
+  // Missile does NOT get a second action even with the perk.
+  const d2 = freshBattle("highland");
+  ensureTurn(d2, "a");
+  const mA = gl.submitAction(d2, "a", { action: "fire", weapon: "missile", target: { x: d2.map.zoneB.x + 5, y: d2.map.zoneB.y + 5 } });
+  ok(mA.ok && d2.activeSlot === "B", "Missile only fires once even with double-shot perk");
+
+  // Perk lost the instant Command Tank is first hit (not necessarily sunk).
+  const d3 = freshBattle("highland");
+  const aCmd = d3.players["a"].tanks.find((t) => t.type === "command");
+  ensureTurn(d3, "b");
+  const hit = gl.submitAction(d3, "b", { action: "fire", weapon: "tank_shoot", target: aCmd.tiles[0] });
+  ok(hit.result.commandHit === "A", "result flags A's Command first-hit");
+  ok(d3.players["a"].commandEverHit === true, "commandEverHit set on first hit");
+  ok(aCmd.sunk === false, "Command not necessarily sunk from one hit");
+  ok(gl.hasDoubleShot(d3.players["a"]) === false, "double-shot lost after first Command hit");
+  // Now A gets only ONE Tank Shoot per turn.
+  ensureTurn(d3, "a");
+  const oneShot = gl.submitAction(d3, "a", { action: "fire", weapon: "tank_shoot", target: { x: d3.map.zoneB.x + 4, y: d3.map.zoneB.y + 4 } });
+  ok(oneShot.ok && oneShot.result.turnContinues === false && d3.activeSlot === "B", "reverts to 1 shot per turn after Command hit");
+  ok(gl.buildPlayerView(d3, "a").doubleShot === false, "view.doubleShot false after Command hit");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
