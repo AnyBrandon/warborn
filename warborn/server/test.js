@@ -184,13 +184,13 @@ ok(!missilePat.has("9,9") && !missilePat.has("11,11") && !missilePat.has("9,11")
    "Missile excludes diagonal corners");
 
 const ballPat = keySet(gl.weaponPattern("ballistic", 20, 20));
-ok(ballPat.size === 33, "Ballistic star is 33 tiles (center + 8 rays x 4)");
-// spot-check each of the 8 directions at full reach
-ok(ballPat.has("24,20") && ballPat.has("16,20") && ballPat.has("20,24") && ballPat.has("20,16"),
-   "Ballistic horizontal/vertical rays reach 4 out");
-ok(ballPat.has("24,24") && ballPat.has("16,16") && ballPat.has("24,16") && ballPat.has("16,24"),
-   "Ballistic diagonal rays reach 4 out");
-ok(!ballPat.has("25,20") && !ballPat.has("22,21"), "Ballistic doesn't exceed reach / off-line tiles");
+ok(ballPat.size === 25, "Ballistic star is 25 tiles (center + 8 rays x 3)");
+// spot-check each of the 8 directions at full reach (3 out)
+ok(ballPat.has("23,20") && ballPat.has("17,20") && ballPat.has("20,23") && ballPat.has("20,17"),
+   "Ballistic horizontal/vertical rays reach 3 out");
+ok(ballPat.has("23,23") && ballPat.has("17,17") && ballPat.has("23,17") && ballPat.has("17,23"),
+   "Ballistic diagonal rays reach 3 out");
+ok(!ballPat.has("24,20") && !ballPat.has("22,21"), "Ballistic doesn't exceed reach / off-line tiles");
 
 // ---- Fresh match for weapon gating/resolution ----
 function freshBattle(mapId) {
@@ -280,11 +280,11 @@ ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballis
 // ==========================================================================
 {
   const pat = keySet(gl.weaponPattern("ballistic", 30, 30));
-  // Along +x: 31,32,33,34 present; 35 (5th) absent.
-  ok(pat.has("34,30") && !pat.has("35,30"), "Ballistic +x ray is exactly 4 long");
-  ok(pat.has("26,30") && !pat.has("25,30"), "Ballistic -x ray is exactly 4 long");
-  ok(pat.has("34,34") && !pat.has("35,35"), "Ballistic diagonal ray is exactly 4 long");
-  ok(pat.size === 33, "Ballistic total is 33 tiles (1 + 8*4)");
+  // Along +x: 31,32,33 present; 34 (4th) absent (rays are now 3 long).
+  ok(pat.has("33,30") && !pat.has("34,30"), "Ballistic +x ray is exactly 3 long");
+  ok(pat.has("27,30") && !pat.has("26,30"), "Ballistic -x ray is exactly 3 long");
+  ok(pat.has("33,33") && !pat.has("34,34"), "Ballistic diagonal ray is exactly 3 long");
+  ok(pat.size === 25, "Ballistic total is 25 tiles (1 + 8*3)");
 }
 
 // ==========================================================================
@@ -375,29 +375,37 @@ ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballis
 {
   const r = freshBattle("highland");
   const bTankTile = r.players["b"].tanks[0].tiles[0];
-  // 3x3 area whose top-left puts bTankTile inside it.
+  // 4x4 area whose top-left puts bTankTile inside it.
   ensureTurn(r, "a");
   const occ = gl.submitAction(r, "a", { action: "recon", area: { x: bTankTile.x - 1, y: bTankTile.y - 1 } });
   ok(occ.ok && occ.result.recon.occupied === true, "recon over enemy unit = occupied");
-  ok(occ.result.recon.area && occ.result.recon.area.w === 3, "recon reports 3x3 area, not exact tile");
+  ok(occ.result.recon.area && occ.result.recon.area.w === 4, "recon reports 4x4 area, not exact tile");
   // No per-tile leak: result exposes only a boolean + the queried area.
   ok(!("tiles" in occ.result.recon) && !("hitTile" in occ.result.recon), "recon does not leak which tile");
+  // Owner records the scanned area as a persistent (owner-only) marker.
+  ok(gl.buildPlayerView(r, "a").myReconAreas.length === 1, "recon area recorded for owner");
 
-  // Empty area: scan a far corner of the enemy zone unlikely to hold a unit.
-  const bz = r.map.zoneB;
-  // find a 3x3 in zone B with no enemy tank tiles
+  // Cap: a second Recon Sweep is rejected (1 use per game).
+  ensureTurn(r, "a");
+  const second = gl.submitAction(r, "a", { action: "recon", area: { x: bTankTile.x - 1, y: bTankTile.y - 1 } });
+  ok(!second.ok && /already used/i.test(second.error), "Recon Sweep capped at 1 use per game");
+  ok(gl.buildPlayerView(r, "a").canRecon === false, "view.canRecon false after use");
+
+  // Empty area (fresh match, first use): 4x4 with no enemy tank tiles = empty.
+  const r2 = freshBattle("highland");
+  const bz = r2.map.zoneB;
   const bOcc = new Set();
-  r.players["b"].tanks.forEach((t) => t.tiles.forEach((tl) => bOcc.add(`${tl.x},${tl.y}`)));
+  r2.players["b"].tanks.forEach((t) => t.tiles.forEach((tl) => bOcc.add(`${tl.x},${tl.y}`)));
   let emptyArea = null;
-  outerR: for (let y = bz.y; y <= bz.y + bz.h - 3; y++)
-    for (let x = bz.x; x <= bz.x + bz.w - 3; x++) {
+  outerR: for (let y = bz.y; y <= bz.y + bz.h - 4; y++)
+    for (let x = bz.x; x <= bz.x + bz.w - 4; x++) {
       let any = false;
-      for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++)
+      for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 4; dx++)
         if (bOcc.has(`${x+dx},${y+dy}`)) any = true;
       if (!any) { emptyArea = { x, y }; break outerR; }
     }
-  ensureTurn(r, "a");
-  const emp = gl.submitAction(r, "a", { action: "recon", area: emptyArea });
+  ensureTurn(r2, "a");
+  const emp = gl.submitAction(r2, "a", { action: "recon", area: emptyArea });
   ok(emp.ok && emp.result.recon.occupied === false, "recon over empty area = empty");
 }
 
@@ -423,6 +431,21 @@ ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballis
   const mA = gl.submitAction(d2, "a", { action: "fire", weapon: "missile", target: { x: d2.map.zoneB.x + 5, y: d2.map.zoneB.y + 5 } });
   ok(mA.ok && d2.activeSlot === "B", "Missile only fires once even with double-shot perk");
 
+  // After the FIRST Tank Shoot, the second action can ONLY be another Tank
+  // Shoot — Missile/Ballistic/Reposition/Smoke substitution is rejected.
+  const d2b = freshBattle("highland");
+  ensureTurn(d2b, "a");
+  const ez2b = d2b.map.zoneB;
+  gl.submitAction(d2b, "a", { action: "fire", weapon: "tank_shoot", target: { x: ez2b.x + 3, y: ez2b.y + 3 } });
+  const subMissile = gl.submitAction(d2b, "a", { action: "fire", weapon: "missile", target: { x: ez2b.x + 5, y: ez2b.y + 5 } });
+  ok(!subMissile.ok && /second action must be another tank shoot/i.test(subMissile.error),
+     "2nd action cannot be a Missile (double-shot is Tank-Shoot-only)");
+  const subRepo = gl.submitAction(d2b, "a", { action: "reposition", tankId: d2b.players["a"].tanks[0].tankId, position: { x: d2b.map.zoneA.x, y: d2b.map.zoneA.y }, rotation: 0 });
+  ok(!subRepo.ok, "2nd action cannot be a Reposition during double-shot");
+  // A genuine second Tank Shoot is allowed and ends the turn.
+  const second = gl.submitAction(d2b, "a", { action: "fire", weapon: "tank_shoot", target: { x: ez2b.x + 6, y: ez2b.y + 6 } });
+  ok(second.ok && d2b.activeSlot === "B", "2nd Tank Shoot is allowed and ends the turn");
+
   // Perk lost the instant Command Tank is first hit (not necessarily sunk).
   const d3 = freshBattle("highland");
   const aCmd = d3.players["a"].tanks.find((t) => t.type === "command");
@@ -437,6 +460,38 @@ ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballis
   const oneShot = gl.submitAction(d3, "a", { action: "fire", weapon: "tank_shoot", target: { x: d3.map.zoneB.x + 4, y: d3.map.zoneB.y + 4 } });
   ok(oneShot.ok && oneShot.result.turnContinues === false && d3.activeSlot === "B", "reverts to 1 shot per turn after Command hit");
   ok(gl.buildPlayerView(d3, "a").doubleShot === false, "view.doubleShot false after Command hit");
+}
+
+// ==========================================================================
+// PART 5 — Reposition blocked by BOTH hit and missed tiles + incoming-shot view
+// ==========================================================================
+{
+  const g = freshBattle("highland");
+  const az = g.map.zoneA;
+  // B fires at an EMPTY land tile in A's zone (a guaranteed MISS on A's board).
+  const aOcc = new Set();
+  g.players["a"].tanks.forEach((t) => t.tiles.forEach((tl) => aOcc.add(`${tl.x},${tl.y}`)));
+  let missTile = null;
+  for (let y = az.y; y < az.y + az.h && !missTile; y++)
+    for (let x = az.x; x < az.x + az.w && !missTile; x++) {
+      const t = g.map.grid[y][x];
+      if ((t === 1 || t === 2) && !aOcc.has(`${x},${y}`)) missTile = { x, y };
+    }
+  ensureTurn(g, "b");
+  const miss = gl.submitAction(g, "b", { action: "fire", weapon: "tank_shoot", target: missTile });
+  ok(miss.ok && miss.result.impacts[0].hit === false, "B misses on an empty A-zone tile");
+
+  // A's own view now shows that incoming MISS (black-dot data) on A's board.
+  const aView = gl.buildPlayerView(g, "a");
+  ok(aView.myIncomingShots.some((s) => s.x === missTile.x && s.y === missTile.y && s.hit === false),
+     "defender sees incoming MISS on own board (myIncomingShots)");
+
+  // A cannot reposition a tank ONTO that missed tile (fired-upon, though not hit).
+  ensureTurn(g, "a");
+  const lite = g.players["a"].tanks.find((t) => t.type === "light");
+  // try to place its top-left exactly on the missed tile
+  const blocked = gl.submitAction(g, "a", { action: "reposition", tankId: lite.tankId, position: { x: missTile.x, y: missTile.y }, rotation: 0 });
+  ok(!blocked.ok && /damaged|fired/i.test(blocked.error), "reposition blocked onto a MISSED (fired-upon) tile");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

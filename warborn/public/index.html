@@ -265,6 +265,7 @@
         <pre id="hackLog"></pre>
         <div class="hackprog"><div id="hackProgFill"></div></div>
         <div id="hackResult" class="hackresult"></div>
+        <button id="hackOkBtn" class="hidden" style="margin:0 16px 16px;">Acknowledge</button>
       </div>
     </div>
 
@@ -273,6 +274,7 @@
       <div class="intrusionbox">
         <div class="intrusion-glyph">⚠</div>
         <pre id="intrusionLog"></pre>
+        <button id="intrusionOkBtn" style="margin-top:8px;">Acknowledge</button>
       </div>
     </div>
 
@@ -650,11 +652,15 @@
     toast("Tap a tile in YOUR zone to lay smoke, then Confirm.");
   });
   $("reconBtn").addEventListener("pointerup", () => {
+    if (G.view && !G.view.canRecon) {
+      toast("Recon Sweep already used this game.");
+      return;
+    }
     G.mode = "recon";
     G.reconArea = null; G.fireTarget = null; G.smokeTile = null; G.repoTankId = null; G.repoDest = null;
     clearGhost();
     updateBattleBar();
-    toast("Tap the ENEMY zone to center a 3x3 intrusion scan, then Confirm.");
+    toast("Tap the ENEMY zone to center a 4x4 intrusion scan, then Confirm.");
   });
   $("repoBtn").addEventListener("pointerup", () => {
     // Guard: no reposition once the Transportation Plane is destroyed.
@@ -741,9 +747,12 @@
     smokeBtn.title = v.canSmoke ? "" : (!v.planeAlive ? "Smoke disabled — plane destroyed" : "No Smoke charges left");
     smokeBtn.classList.toggle("secondary", G.mode !== "smoke");
 
-    // Recon Sweep — always available.
+    // Recon Sweep — 1 use per game (server-authoritative).
     const reconBtn = $("reconBtn");
     show("reconBtn");
+    reconBtn.disabled = !v.canRecon;
+    reconBtn.textContent = `Recon Sweep (${v.reconUsesLeft})`;
+    reconBtn.title = v.canRecon ? "" : "Recon Sweep already used this game";
     reconBtn.classList.toggle("secondary", G.mode !== "recon");
 
     // Reposition is gated on the Transportation Plane being alive.
@@ -884,12 +893,17 @@
   }
 
   // ---- Recon Sweep themed sequences -----------------------------------------
+  $("hackOkBtn").addEventListener("pointerup", () => hide("hackScreen"));
+  $("intrusionOkBtn").addEventListener("pointerup", () => hide("intrusionScreen"));
+
   // Attacker: ~5s hacker-terminal intrusion, then the binary result revealed.
+  // Waits for the player to tap Acknowledge (no auto-close).
   function runHackSequence(occupied) {
     show("hackScreen");
     const log = $("hackLog");
     const fill = $("hackProgFill");
     const res = $("hackResult");
+    hide("hackOkBtn");
     log.textContent = ""; res.textContent = ""; res.className = "hackresult"; fill.style.width = "0%";
     const lines = [
       "> initiating covert uplink...",
@@ -920,11 +934,12 @@
         res.textContent = ">> SECTOR CLEAR — NO HOSTILE SIGNATURE <<";
         res.className = "hackresult clear";
       }
-      setTimeout(() => hide("hackScreen"), 2600);
+      // Wait for the player to manually dismiss (no auto-close).
+      show("hackOkBtn");
     }, total);
   }
 
-  // Defender: intrusion-detected warning, shown for the same window.
+  // Defender: intrusion-detected warning. Stays until the player acknowledges.
   function runIntrusionAlert() {
     show("intrusionScreen");
     const log = $("intrusionLog");
@@ -935,7 +950,7 @@
       "> hostile process scanning your grid...",
       "> ENEMY IS TRACING YOUR POSITIONS",
       "> countermeasures offline // unable to block",
-      "> they are reading a 3x3 sector of your defenses",
+      "> they are reading a 4x4 sector of your defenses",
       "",
       "hold the line, commander.",
     ];
@@ -945,7 +960,6 @@
       if (i < lines.length) log.textContent += lines[i++] + "\n";
     }, step);
     setTimeout(() => { clearInterval(lineTimer); }, 5000);
-    setTimeout(() => hide("intrusionScreen"), 5000 + 1500);
   }
 
   // ---- Game over ------------------------------------------------------------
@@ -1100,13 +1114,15 @@
     v.myTanks.forEach((t) => {
       if (t.tiles && t.tiles.length) addTankMesh(t);
     });
-    // Damage markers on my tanks (tiles the enemy has hit).
-    v.myTanks.forEach((t) => {
-      (t.hitTiles || []).forEach((h) => addMarker(h.x, h.y, true));
-    });
+    // Incoming shots on MY board: show EVERY tile the enemy fired at me, with
+    // red (hit) and black (miss) markers — previously misses were invisible to
+    // the defender. This is server-authoritative (view.myIncomingShots).
+    (v.myIncomingShots || []).forEach((s) => addMarker(s.x, s.y, s.hit));
     // My OWN active smoke tiles — visible only to me (server never sends the
     // enemy's smoke, so it stays a hidden defensive trap on their view).
     (v.mySmoke || []).forEach((s) => addSmokeTile(s.x, s.y));
+    // My OWN previously-scanned Recon areas — persistent, owner-only markers.
+    (v.myReconAreas || []).forEach((a) => addReconAreaMarker(a));
 
     // Battle: enemy zone is fog-of-war IN ITS REAL POSITION on this same map.
     if (battle) {
@@ -1181,7 +1197,8 @@
     tankGroup.add(mesh);
   }
 
-  // Hit/miss marker. hit=true -> red sphere; false -> white flat disc.
+  // Hit/miss marker. hit=true -> red sphere; false -> BLACK dot (standardized
+  // miss marker, shown to BOTH attacker and defender on their respective views).
   function addMarker(x, y, hit) {
     const w = tileToWorld(x, y);
     let mesh;
@@ -1191,12 +1208,27 @@
       mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(w.x, 0.55, w.z);
     } else {
-      const geo = new THREE.CylinderGeometry(0.22, 0.22, 0.08, 12);
-      const mat = new THREE.MeshStandardMaterial({ color: 0xdfe7f0 });
+      const geo = new THREE.SphereGeometry(0.2, 10, 10);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x0b0b0b, emissive: 0x000000 });
       mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(w.x, 0.25, w.z);
+      mesh.position.set(w.x, 0.4, w.z);
     }
     markerGroup.add(mesh);
+  }
+
+  // Persistent owner-only marker for a Recon Sweep area I've already scanned.
+  function addReconAreaMarker(area) {
+    const grp = new THREE.Group();
+    for (let dy = 0; dy < area.h; dy++)
+      for (let dx = 0; dx < area.w; dx++) {
+        const geo = new THREE.BoxGeometry(0.9, 0.06, 0.9);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.22, emissive: 0x0a3a44 });
+        const mesh = new THREE.Mesh(geo, mat);
+        const wc = tileToWorld(area.x + dx, area.y + dy);
+        mesh.position.set(wc.x, 0.2, wc.z);
+        grp.add(mesh);
+      }
+    markerGroup.add(grp);
   }
 
   function addSunkTile(x, y) {
@@ -1245,9 +1277,25 @@
     }
 
     if (battle) {
-      // Unified battle view: frame the WHOLE shared map (both zones visible on
-      // one continuous board), centered on the map with a small margin.
-      fitTo(0, 0, GRID_W + 6, GRID_H + 6);
+      // Unified battle view: frame the WHOLE shared map, but orient the camera
+      // so THIS player's OWN zone is in the foreground (nearest the camera) and
+      // the enemy zone is beyond it — matching each player's natural viewpoint.
+      // Without this, Player A (top/low-y zone) would look across at the enemy
+      // zone in front and their own zone far away.
+      const myZone = G.view && G.view.myZone;
+      const fov = (camera.fov * Math.PI) / 180;
+      const aspect = camera.aspect || 1;
+      const spanX = GRID_W + 6, spanZ = GRID_H + 6;
+      const half = Math.max(spanZ / 2, (spanX / 2) / aspect);
+      const dist = (half / Math.tan(fov / 2)) * 1.5 + 8;
+      // Decide which side my zone is on: if it's in the top half of the map
+      // (smaller y / -z), place the camera on the -z side looking toward +z.
+      const myOnTop = myZone ? (myZone.y + myZone.h / 2) < GRID_H / 2 : false;
+      const zSign = myOnTop ? -1 : 1;
+      controls.target.set(0, 0, 0);
+      camera.position.set(0, dist * 0.85, zSign * dist * 0.6);
+      controls.update();
+      return;
     } else {
       // Deploy: frame THIS player's own zone (A's and B's differ). Pad a little
       // so surrounding coastline is visible for tactical context.
@@ -1283,7 +1331,7 @@
 
   // Mirror of the server's weapon patterns for AIM PREVIEW only (server is
   // authoritative for actual resolution). Returns [{x,y}] centered on cx,cy.
-  const BALLISTIC_RAY_LEN = 4;
+  const BALLISTIC_RAY_LEN = 3; // must match server
   function clientWeaponPattern(weapon, cx, cy) {
     if (weapon === "missile") {
       return [{x:cx,y:cy},{x:cx,y:cy-1},{x:cx,y:cy+1},{x:cx-1,y:cy},{x:cx+1,y:cy}];
@@ -1337,9 +1385,22 @@
       const tile = G.repoDest || (hoverTile && hoverTile.side === "mine" ? hoverTile : null);
       if (t && tile) drawFootprintGhost(t.footprint, G.repoRotation, tile, 0x7fd1ff);
     }
-    // Battle fire: keep the staged aim marker visible.
-    if (G.view.phase === "battle" && G.mode === "fire" && G.fireTarget) {
-      drawAimGhost(G.fireTarget);
+    // Battle fire: staged aim marker, else live hover preview of the pattern.
+    if (G.view.phase === "battle" && G.mode === "fire") {
+      const tile = G.fireTarget || (hoverTile && hoverTile.side === "enemy" ? hoverTile : null);
+      if (tile) drawAimGhost(tile);
+    }
+    // Battle recon: staged 4x4, else LIVE hover preview of the 4x4 area.
+    if (G.view.phase === "battle" && G.mode === "recon") {
+      const tile = G.reconArea
+        ? G.reconArea
+        : (hoverTile && hoverTile.side === "enemy" ? { x: hoverTile.x - 1, y: hoverTile.y - 1 } : null);
+      if (tile) drawReconGhost(tile);
+    }
+    // Battle smoke: staged tile, else hover preview.
+    if (G.view.phase === "battle" && G.mode === "smoke") {
+      const tile = G.smokeTile || (hoverTile && hoverTile.side === "mine" ? hoverTile : null);
+      if (tile) drawSmokeGhost(tile);
     }
   }
 
@@ -1431,7 +1492,7 @@
       updateBattleBar();
     } else if (G.mode === "recon") {
       if (picked.side !== "enemy") { toast("Scan the ENEMY zone (red)."); return; }
-      // Center the 3x3 on the tapped tile (store top-left).
+      // Position the 4x4 so the tapped tile sits near its center (store top-left).
       G.reconArea = { x: picked.x - 1, y: picked.y - 1 };
       clearGhost(); drawReconGhost(G.reconArea);
       updateBattleBar();
@@ -1468,10 +1529,11 @@
     ghostGroup.add(mesh);
   }
 
-  // Ghost preview for a staged 3x3 recon area (cyan outline tiles).
+  // Ghost preview for a staged/hovered 4x4 recon area (cyan tiles).
+  const RECON_SIZE = 4; // must match server RECON_SIZE
   function drawReconGhost(area) {
-    for (let dy = 0; dy < 3; dy++)
-      for (let dx = 0; dx < 3; dx++) {
+    for (let dy = 0; dy < RECON_SIZE; dy++)
+      for (let dx = 0; dx < RECON_SIZE; dx++) {
         const geo = new THREE.BoxGeometry(0.85, 0.14, 0.85);
         const mat = new THREE.MeshStandardMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.5, emissive: 0x066b78 });
         const mesh = new THREE.Mesh(geo, mat);

@@ -40,11 +40,12 @@ const TURN_TIME_MS = 30000; // 30 second per-turn timer (single active player)
 // ---------------------------------------------------------------------------
 const MISSILE_MAX_USES = 3;
 const BALLISTIC_MAX_USES = 1;
-// Each of the 8 rays extends exactly 4 tiles from (and NOT counting) the shared
-// center tile: total = 1 center + 8*4 = 33 tiles.
-const BALLISTIC_RAY_LEN = 4;
+// Each of the 8 rays extends exactly 3 tiles from (and NOT counting) the shared
+// center tile: total = 1 center + 8*3 = 25 tiles.
+const BALLISTIC_RAY_LEN = 3;
 const SMOKE_MAX_CHARGES = 3; // Smoke charges per player per game
-const RECON_SIZE = 3; // Recon Sweep scans a 3x3 area
+const RECON_SIZE = 4; // Recon Sweep scans a 4x4 area
+const RECON_MAX_USES = 1; // Recon Sweep uses per player per game
 
 const WEAPONS = {
   tank_shoot: { id: "tank_shoot", label: "Tank Shoot" },
@@ -187,6 +188,8 @@ function addPlayer(match, playerId) {
     },
     smokeCharges: SMOKE_MAX_CHARGES, // remaining Smoke charges (3 total)
     activeSmoke: [], // this player's own live smoke tiles: [{x,y}]
+    reconUses: 0, // Recon Sweep uses (cap 1/game)
+    reconAreas: [], // areas this player has scanned: [{x,y,w,h}] (owner-only marker)
     commandEverHit: false, // set true the first time the Command Tank is hit
     // Double-shot bookkeeping: how many Tank Shoots taken in the CURRENT turn.
     shotsThisTurn: 0,
@@ -369,6 +372,19 @@ function submitAction(match, playerId, action) {
     return { ok: false, error: "Not your turn" };
   }
 
+  // Double-shot restriction: if the player has ALREADY fired a Tank Shoot this
+  // turn (mid-double-shot), their SECOND action may only be another Tank Shoot
+  // or a "pass" (declining the bonus shot). No Missile / Ballistic / Reposition
+  // / Smoke / Recon substitution for the second action.
+  if (player.shotsThisTurn > 0) {
+    const isSecondTankShoot =
+      action.action === "fire" && (action.weapon || "tank_shoot") === "tank_shoot";
+    const isPass = action.action === "pass";
+    if (!isSecondTankShoot && !isPass) {
+      return { ok: false, error: "Double-shot: second action must be another Tank Shoot" };
+    }
+  }
+
   const validated = validateAction(match, player, action);
   if (!validated.ok) return validated;
 
@@ -463,7 +479,10 @@ function validateAction(match, player, action) {
   }
 
   if (action.action === "recon") {
-    // Recon Sweep: pick the TOP-LEFT of a 3x3 area on the enemy zone. Unlimited.
+    // Recon Sweep: pick the TOP-LEFT of a RECON_SIZE x RECON_SIZE area. 1/game.
+    if (player.reconUses >= RECON_MAX_USES) {
+      return { ok: false, error: "Recon Sweep already used this game" };
+    }
     const { x, y } = action.area || {};
     if (typeof x !== "number" || typeof y !== "number") {
       return { ok: false, error: "Recon needs an area" };
@@ -509,7 +528,9 @@ function validateAction(match, player, action) {
       }
     }
 
-    // CANNOT move onto a tile that has already been hit/damaged on own board.
+    // CANNOT move onto any tile that has ALREADY been fired upon on my own board
+    // — this covers BOTH hits and misses, since player.hits records every fired
+    // tile with its resolved outcome (not just hits).
     const hitMap = player.hits || new Map();
     for (const tl of newTiles) {
       if (hitMap.has(`${tl.x},${tl.y}`)) {
@@ -615,7 +636,8 @@ function resolveAction(match, act) {
     actor.activeSmoke.push({ x: act.target.x, y: act.target.y });
     result.smokePlaced = { slot: act.slot, x: act.target.x, y: act.target.y };
   } else if (act.action === "recon") {
-    // Scan a 3x3 on the enemy zone; binary occupied/empty, no damage, no tile leak.
+    // Scan a RECON_SIZE x RECON_SIZE on the enemy zone; binary occupied/empty,
+    // no damage, no tile leak.
     const target = getPlayerBySlot(match, opponentSlot(act.slot));
     const zone = zoneForSlot(match, target.slot);
     let occupied = false;
@@ -626,7 +648,10 @@ function resolveAction(match, act) {
         if (target.tanks.some((t) => !t.sunk && t.tiles.some((tl) => tl.x === x && tl.y === y)))
           occupied = true;
       }
-    result.recon = { slot: act.slot, area: { x: act.area.x, y: act.area.y, w: RECON_SIZE, h: RECON_SIZE }, occupied };
+    const area = { x: act.area.x, y: act.area.y, w: RECON_SIZE, h: RECON_SIZE };
+    actor.reconUses += 1;
+    actor.reconAreas.push(area); // owner-only persistent marker
+    result.recon = { slot: act.slot, area, occupied };
   } else if (act.action === "fire") {
     const target = getPlayerBySlot(match, opponentSlot(act.slot));
     const zone = zoneForSlot(match, target.slot);
@@ -729,6 +754,15 @@ function buildPlayerView(match, playerId) {
         }))
       : [];
 
+  // Incoming shots on MY own board: every tile the enemy has fired at me, with
+  // the resolved hit/miss. This lets the DEFENDER see both red (hit) and black
+  // (miss) markers on their own zone — previously misses were invisible to them.
+  const myIncomingShots = [];
+  for (const [key, wasHit] of (me.hits || new Map())) {
+    const [x, y] = key.split(",").map(Number);
+    myIncomingShots.push({ x, y, hit: wasHit });
+  }
+
   return {
     slot: me.slot,
     phase: match.phase,
@@ -743,6 +777,7 @@ function buildPlayerView(match, playerId) {
     myZone: match.map ? zoneForSlot(match, me.slot) : null,
     enemyZone: match.map ? zoneForSlot(match, oppSlot) : null,
     enemyShots, // tiles I've fired on the enemy + hit/miss
+    myIncomingShots, // tiles the enemy fired at me + hit/miss (my own board)
     enemySunkTanks, // revealed only when sunk
     myReady: me.ready,
     oppReady: opp ? opp.ready : false,
@@ -760,6 +795,10 @@ function buildPlayerView(match, playerId) {
     smokeCharges: me.smokeCharges,
     canSmoke: canSmoke(me),
     mySmoke: (me.activeSmoke || []).map((s) => ({ x: s.x, y: s.y })),
+    // Recon: uses left + my OWN scanned areas (owner-only persistent markers).
+    reconUsesLeft: RECON_MAX_USES - me.reconUses,
+    canRecon: me.reconUses < RECON_MAX_USES,
+    myReconAreas: (me.reconAreas || []).map((a) => ({ x: a.x, y: a.y, w: a.w, h: a.h })),
     // Command Tank double-shot perk:
     doubleShot: hasDoubleShot(me),
     shotsThisTurn: me.shotsThisTurn,
@@ -784,6 +823,8 @@ function resetMatch(match) {
     p.weapons = { missileUses: 0, missileLastTurn: -10, ballisticUses: 0 };
     p.smokeCharges = SMOKE_MAX_CHARGES;
     p.activeSmoke = [];
+    p.reconUses = 0;
+    p.reconAreas = [];
     p.commandEverHit = false;
     p.shotsThisTurn = 0;
   }
@@ -795,6 +836,7 @@ module.exports = {
   WEAPONS,
   SMOKE_MAX_CHARGES,
   RECON_SIZE,
+  RECON_MAX_USES,
   weaponPattern,
   weaponStatus,
   heavyAlive,
