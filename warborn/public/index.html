@@ -1744,7 +1744,7 @@
     if (!proto) return null;
     const obj = proto.clone(true);
     obj.position.set(0, 0, 0); obj.rotation.set(0, 0, 0); obj.scale.setScalar(1);
-    obj.updateMatrixWorld(true); // CRITICAL: refresh world matrices before measuring
+    obj.updateMatrixWorld(true);
 
     let box0 = new THREE.Box3().setFromObject(obj);
     let size0 = new THREE.Vector3(); box0.getSize(size0);
@@ -1757,32 +1757,35 @@
         "max=", box0.max.x.toFixed(2), box0.max.y.toFixed(2), box0.max.z.toFixed(2));
     }
 
-    // Align the model's LONGER horizontal axis with the footprint's LONGER axis
-    // so an elongated model (e.g. the plane) fills a non-square footprint (1x4)
-    // correctly regardless of how its long axis was baked in the .glb.
-    const footLongIsX = w >= h;
-    const modelLongIsX = size0.x >= size0.z;
-    if (footLongIsX !== modelLongIsX) {
-      obj.rotation.y += Math.PI / 2;
-      obj.updateMatrixWorld(true);
-      box0 = new THREE.Box3().setFromObject(obj);
-      size0 = new THREE.Vector3(); box0.getSize(size0);
+    // Only auto-rotate to match the footprint's long axis when the model is
+    // CLEARLY elongated (e.g. the plane). Near-square models (tanks) keep
+    // their authored orientation — comparing raw x vs z on a near-square
+    // model flips unpredictably on tiny dimension noise, which is what broke
+    // Command Tank.
+    const ASPECT_THRESHOLD = 1.35;
+    const longRaw = Math.max(size0.x, size0.z);
+    const shortRaw = Math.max(Math.min(size0.x, size0.z), 0.0001);
+    if (longRaw / shortRaw >= ASPECT_THRESHOLD) {
+      const footLongIsX = w >= h;
+      const modelLongIsX = size0.x >= size0.z;
+      if (footLongIsX !== modelLongIsX) {
+        obj.rotation.y += Math.PI / 2;
+        obj.updateMatrixWorld(true);
+        box0 = new THREE.Box3().setFromObject(obj);
+        size0 = new THREE.Vector3(); box0.getSize(size0);
+      }
     }
 
-    // Fit within the footprint box (small margin). For SQUARE footprints (tanks)
-    // this is uniform. For ELONGATED footprints (the 1x4 plane) we stretch the
-    // long axis so the model actually SPANS all its tiles instead of staying ~1
-    // tile — scale each horizontal axis independently to fill its footprint
-    // dimension. Y uses the smaller horizontal factor so height stays sensible.
+    // UNIFORM scale only — never distort a model on different axes. Fit the
+    // full bounding box inside the footprint using the single limiting
+    // factor. This is what stops tank bodies from being squashed thin.
     const targetW = w * 0.9, targetD = h * 0.9;
     const sx = targetW / (size0.x || 1);
     const sz = targetD / (size0.z || 1);
-    const sy = Math.min(sx, sz);
-    obj.scale.set(sx, sy, sz);
+    const s = Math.min(sx, sz);
+    obj.scale.setScalar(s);
     obj.updateMatrixWorld(true);
 
-    // Re-measure AFTER scaling to correctly account for the pivot, then place
-    // the model centered horizontally with its base on y=0.
     const box1 = new THREE.Box3().setFromObject(obj);
     const center1 = new THREE.Vector3(); box1.getCenter(center1);
     obj.position.x -= center1.x;
@@ -1998,8 +2001,19 @@
   // is orbiting; only re-frame on a phase change.
   function frameCamera(battle) {
     if (!controls) return;
-    if (battle === G._framedFor) return; // already framed for this phase
-    G._framedFor = battle;
+    // Only skip re-framing if we've ALREADY framed this phase using REAL data.
+    // The old guard locked even a premature default-fallback framing (fired
+    // before G.view.myZone was populated), permanently aiming Player A at the
+    // map center — and it never retried once the real zone arrived. Now we only
+    // set the lock when a real myZone was actually used (see below), so a
+    // premature framing is correctly retried on the next state update.
+    if (battle === G._framedFor) return;
+    // Whether we have real zone data RIGHT NOW (not the default fallback).
+    const haveRealZone = !!(G.view && G.view.myZone);
+    if (GLB_DEBUG) {
+      console.log("[CAM] frameCamera battle=", battle, "slot=", G.view && G.view.slot,
+        "myZone=", G.view && JSON.stringify(G.view.myZone), "haveRealZone=", haveRealZone);
+    }
 
     // Fit the camera to a region of the given world-space width/height. Derives
     // distance from the region size + camera FOV so the whole area is visible on
@@ -2044,6 +2058,11 @@
       controls.target.set(wc.x, 0, wc.z);
       camera.position.set(wc.x + dirX * back, dist * 0.8, wc.z + dirZ * back);
       controls.update();
+      // Lock this phase's framing ONLY if we used real zone data. If myZone was
+      // still the default fallback, leave the lock unset so the next state
+      // update (with real data) re-frames correctly — fixing Player A's
+      // message-order-dependent wrong framing.
+      if (haveRealZone) G._framedFor = battle;
       return;
     } else {
       // Deploy: frame THIS player's own zone (A's and B's differ). Pad a little
@@ -2055,6 +2074,8 @@
       fitTo(wc.x, wc.z, z.w + 12, z.h + 12);
     }
     controls.update();
+    // Same conditional lock for the deploy branch.
+    if (haveRealZone) G._framedFor = battle;
   }
 
   // ---- Placement/reposition ghost preview ----------------------------------

@@ -67,11 +67,19 @@ ok(roster.length === 10, "roster has 10 units");
 ok(roster.filter((t) => t.type === "light").length === 3, "3 Light Tanks");
 ok(roster.filter((t) => t.type === "plane").length === 1, "1 Transportation Plane");
 ok(roster.find((t) => t.type === "plane").combat === false, "plane is non-combat");
+// Plane footprint is now 2x4 (8 tiles).
+const planeDef = roster.find((t) => t.type === "plane");
+ok(planeDef.footprint[0] === 2 && planeDef.footprint[1] === 4, "plane footprint is 2x4");
 
 deployAll(m, pA, m.map.zoneA);
 deployAll(m, pB, m.map.zoneB);
 ok(gl.allPlaced(m.players[pA]), "player A fully placed (10)");
 ok(gl.allPlaced(m.players[pB]), "player B fully placed (10)");
+// The placed 2x4 plane occupies exactly 8 distinct tiles.
+const placedPlane = m.players[pA].tanks.find((t) => t.type === "plane");
+ok(placedPlane.tiles.length === 8, "placed plane occupies 8 tiles (2x4)");
+const planeKeys = new Set(placedPlane.tiles.map((t) => `${t.x},${t.y}`));
+ok(planeKeys.size === 8, "plane's 8 tiles are all distinct (no overlap in footprint)");
 
 const rdy = gl.setReady(m, pA); gl.setReady(m, pB);
 ok(m.phase === "battle", "both ready -> battle");
@@ -471,15 +479,27 @@ ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballis
 {
   const g = freshBattle("highland");
   const az = g.map.zoneA;
-  // B fires at an EMPTY land tile in A's zone (a guaranteed MISS on A's board).
+  const { LAND, HILL, FOREST } = require("./maps");
   const aOcc = new Set();
   g.players["a"].tanks.forEach((t) => t.tiles.forEach((tl) => aOcc.add(`${tl.x},${tl.y}`)));
-  let missTile = null;
-  for (let y = az.y; y < az.y + az.h && !missTile; y++)
-    for (let x = az.x; x < az.x + az.w && !missTile; x++) {
-      const t = g.map.grid[y][x];
-      if ((t === 1 || t === 2) && !aOcc.has(`${x},${y}`)) missTile = { x, y };
+  // A light tank (footprint 1x2) reposition destination must have BOTH its
+  // tiles (x,y)+(x,y+1) be empty, in-zone, non-mud land. Pick a missTile at the
+  // TOP of such a valid pair so the ONLY blocker will be the fired-upon tile.
+  const validDest = (x, y) => {
+    for (const [dx, dy] of [[0, 0], [0, 1]]) {
+      const tt = g.map.grid[y + dy] && g.map.grid[y + dy][x + dx];
+      if (tt !== LAND && tt !== HILL && tt !== FOREST) return false; // not mud/void
+      if (x + dx < az.x || x + dx >= az.x + az.w || y + dy < az.y || y + dy >= az.y + az.h) return false;
+      if (aOcc.has(`${x + dx},${y + dy}`)) return false;
     }
+    return true;
+  };
+  let missTile = null;
+  for (let y = az.y; y < az.y + az.h - 1 && !missTile; y++)
+    for (let x = az.x; x < az.x + az.w && !missTile; x++)
+      if (validDest(x, y)) missTile = { x, y };
+  ok(!!missTile, "found a valid light-tank reposition destination to fire upon");
+
   ensureTurn(g, "b");
   const miss = gl.submitAction(g, "b", { action: "fire", weapon: "tank_shoot", target: missTile });
   ok(miss.ok && miss.result.impacts[0].hit === false, "B misses on an empty A-zone tile");
@@ -492,7 +512,6 @@ ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballis
   // A cannot reposition a tank ONTO that missed tile (fired-upon, though not hit).
   ensureTurn(g, "a");
   const lite = g.players["a"].tanks.find((t) => t.type === "light");
-  // try to place its top-left exactly on the missed tile
   const blocked = gl.submitAction(g, "a", { action: "reposition", tankId: lite.tankId, position: { x: missTile.x, y: missTile.y }, rotation: 0 });
   ok(!blocked.ok && /damaged|fired/i.test(blocked.error), "reposition blocked onto a MISSED (fired-upon) tile");
 }
