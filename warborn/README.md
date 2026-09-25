@@ -32,7 +32,7 @@ Open http://localhost:3000 in two browser tabs (or two machines). In tab 1 click
 
 - Player A picks the map (authoritative in Phase 1).
 - Both players deploy 10 units in their own zone: tap/click a unit in the tray, tap a tile, use **Rotate** (or press **R**) to turn it. Tap **Ready**.
-- Roster (10 units): 1 Command Tank, 2 Heavy, 3 Medium, 3 Light, and 1 **Transportation Plane** (2x4, non-combat — it can't fire but is placeable/targetable/sinkable).
+- Roster (10 units): 1 Command Tank, 2 Heavy, 3 Medium, 3 Light, and 1 **Transportation Plane** (2x2, non-combat — it can't fire but is placeable/targetable/sinkable).
 - Turns are **strict alternating** (Phase 2). A random player goes first, then players take turns one at a time. On your turn you pick ONE action (Fire, or Reposition if your plane is alive) and it resolves immediately. A 45s timer runs on the active player's turn only; if it expires you forfeit that turn and play passes to the opponent. The HUD shows whose turn it is.
 - **Transportation Plane gating**: you may only Reposition while your plane is alive. Once your plane is fully sunk, Reposition is permanently disabled (Fire remains). Enforced server-side.
 - **Weapons** (Fire picks one of three, all resolve instantly, all server-authoritative):

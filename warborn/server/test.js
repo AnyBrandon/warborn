@@ -67,19 +67,19 @@ ok(roster.length === 10, "roster has 10 units");
 ok(roster.filter((t) => t.type === "light").length === 3, "3 Light Tanks");
 ok(roster.filter((t) => t.type === "plane").length === 1, "1 Transportation Plane");
 ok(roster.find((t) => t.type === "plane").combat === false, "plane is non-combat");
-// Plane footprint is now 2x4 (8 tiles).
+// Plane footprint is now 2x2 (4 tiles).
 const planeDef = roster.find((t) => t.type === "plane");
-ok(planeDef.footprint[0] === 2 && planeDef.footprint[1] === 4, "plane footprint is 2x4");
+ok(planeDef.footprint[0] === 2 && planeDef.footprint[1] === 2, "plane footprint is 2x2");
 
 deployAll(m, pA, m.map.zoneA);
 deployAll(m, pB, m.map.zoneB);
 ok(gl.allPlaced(m.players[pA]), "player A fully placed (10)");
 ok(gl.allPlaced(m.players[pB]), "player B fully placed (10)");
-// The placed 2x4 plane occupies exactly 8 distinct tiles.
+// The placed 2x2 plane occupies exactly 4 distinct tiles.
 const placedPlane = m.players[pA].tanks.find((t) => t.type === "plane");
-ok(placedPlane.tiles.length === 8, "placed plane occupies 8 tiles (2x4)");
+ok(placedPlane.tiles.length === 4, "placed plane occupies 4 tiles (2x2)");
 const planeKeys = new Set(placedPlane.tiles.map((t) => `${t.x},${t.y}`));
-ok(planeKeys.size === 8, "plane's 8 tiles are all distinct (no overlap in footprint)");
+ok(planeKeys.size === 4, "plane's 4 tiles are all distinct (no overlap in footprint)");
 
 const rdy = gl.setReady(m, pA); gl.setReady(m, pB);
 ok(m.phase === "battle", "both ready -> battle");

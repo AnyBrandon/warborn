@@ -33,7 +33,7 @@ const TANK_ROSTER = [
   { type: "heavy", label: "Heavy Tank", footprint: [2, 3], count: 2, combat: true },
   { type: "medium", label: "Medium Tank", footprint: [2, 2], count: 3, combat: true },
   { type: "light", label: "Light Tank", footprint: [1, 2], count: 3, combat: true },
-  { type: "plane", label: "Transportation Plane", footprint: [2, 4], count: 1, combat: false },
+  { type: "plane", label: "Transportation Plane", footprint: [2, 2], count: 1, combat: false },
 ];
 
 const TURN_TIME_MS = 45000; // 45 second per-turn timer (single active player)

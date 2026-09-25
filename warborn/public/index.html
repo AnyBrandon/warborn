@@ -384,6 +384,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js"></script>
   <script>
   // ===========================================================================
   // Warborn client — single-file. All game UI, state, rendering, and network.
@@ -590,7 +591,7 @@
       show("mapscreen");
       setupMapScreen();
       stopTimer();
-      G._framedFor = undefined; // re-frame camera on next deploy/battle
+      G._framedSig = undefined; // re-frame camera on next deploy/battle
       hide("surrenderBtn");
     } else if (v.phase === "deploy") {
       hide("mapscreen"); hide("overScreen"); hide("surrenderBtn");
@@ -1739,10 +1740,33 @@
   //      1x4 footprint isn't forced to a square tile size.
   //   3) Re-measure after scaling (pivot may be anywhere) and translate so the
   //      model is horizontally centered and its base sits on the tile top.
+  // Does this loaded model contain any SkinnedMesh? (Cached per prototype.)
+  function modelIsSkinned(root) {
+    if (root.__isSkinned !== undefined) return root.__isSkinned;
+    let skinned = false;
+    root.traverse((c) => { if (c.isSkinnedMesh) skinned = true; });
+    root.__isSkinned = skinned;
+    return skinned;
+  }
+  // Clone a loaded model correctly whether or not it's skinned. SkeletonUtils
+  // rebinds the cloned skeleton so skinned sub-meshes (tank body/tracks) render;
+  // a plain clone is fine (and cheaper) for static models.
+  function cloneModel(proto) {
+    if (modelIsSkinned(proto) && THREE.SkeletonUtils && THREE.SkeletonUtils.clone) {
+      return THREE.SkeletonUtils.clone(proto);
+    }
+    return proto.clone(true);
+  }
+
   function instantiateGlb(url, w, h) {
     const proto = _glbCache[url];
     if (!proto) return null;
-    const obj = proto.clone(true);
+    // Skinned models (Medium/Heavy tank bodies + tracks are SkinnedMeshes with
+    // JOINTS_0/WEIGHTS_0 + armatures) MUST be cloned with SkeletonUtils.clone —
+    // Object3D.clone() does not rebind the cloned skeleton, so the skinned parts
+    // render collapsed/invisible (only the non-skinned barrel showed). Static
+    // models (Command/Light/plane) clone fine either way.
+    const obj = cloneModel(proto);
     obj.position.set(0, 0, 0); obj.rotation.set(0, 0, 0); obj.scale.setScalar(1);
     obj.updateMatrixWorld(true);
 
@@ -1814,7 +1838,7 @@
       const url = GLB_TREES[pick];
       let proto = _glbCache[url];
       if (!proto) continue; // model not loaded -> skip (ground texture still shows)
-      const tree = proto.clone(true);
+      const tree = cloneModel(proto);
       tree.position.set(0, 0, 0); tree.rotation.set(0, 0, 0); tree.scale.setScalar(1);
       tree.updateMatrixWorld(true);
       // Normalize tree to ~1.4 tiles tall, measuring correctly (world matrices
@@ -2001,15 +2025,18 @@
   // is orbiting; only re-frame on a phase change.
   function frameCamera(battle) {
     if (!controls) return;
-    // Only skip re-framing if we've ALREADY framed this phase using REAL data.
-    // The old guard locked even a premature default-fallback framing (fired
-    // before G.view.myZone was populated), permanently aiming Player A at the
-    // map center — and it never retried once the real zone arrived. Now we only
-    // set the lock when a real myZone was actually used (see below), so a
-    // premature framing is correctly retried on the next state update.
-    if (battle === G._framedFor) return;
     // Whether we have real zone data RIGHT NOW (not the default fallback).
     const haveRealZone = !!(G.view && G.view.myZone);
+    // A signature of what we'd frame on: phase + the actual zone used. We skip
+    // re-framing only if we've ALREADY framed THIS phase using THIS SAME real
+    // zone. This fixes two things at once:
+    //  - a premature default-fallback framing (no myZone yet) never locks, so it
+    //    retries once real data arrives (message-order resilience);
+    //  - if the zone we have now differs from what we last framed (e.g. solo A
+    //    framed before myZone was applied, then myZone arrived), we re-frame.
+    const zoneSig = haveRealZone ? JSON.stringify(G.view.myZone) : "default";
+    const sig = battle + "|" + zoneSig;
+    if (haveRealZone && G._framedSig === sig) return;
     if (GLB_DEBUG) {
       console.log("[CAM] frameCamera battle=", battle, "slot=", G.view && G.view.slot,
         "myZone=", G.view && JSON.stringify(G.view.myZone), "haveRealZone=", haveRealZone);
@@ -2058,11 +2085,10 @@
       controls.target.set(wc.x, 0, wc.z);
       camera.position.set(wc.x + dirX * back, dist * 0.8, wc.z + dirZ * back);
       controls.update();
-      // Lock this phase's framing ONLY if we used real zone data. If myZone was
-      // still the default fallback, leave the lock unset so the next state
-      // update (with real data) re-frames correctly — fixing Player A's
-      // message-order-dependent wrong framing.
-      if (haveRealZone) G._framedFor = battle;
+      // Lock this framing ONLY if we used real zone data. If myZone was still
+      // the default fallback, leave it unlocked so the next update (with real
+      // data / a different zone) re-frames — fixing message-order & solo-A races.
+      if (haveRealZone) G._framedSig = sig;
       return;
     } else {
       // Deploy: frame THIS player's own zone (A's and B's differ). Pad a little
@@ -2074,8 +2100,8 @@
       fitTo(wc.x, wc.z, z.w + 12, z.h + 12);
     }
     controls.update();
-    // Same conditional lock for the deploy branch.
-    if (haveRealZone) G._framedFor = battle;
+    // Same conditional lock for the deploy branch (keyed on the real zone used).
+    if (haveRealZone) G._framedSig = sig;
   }
 
   // ---- Placement/reposition ghost preview ----------------------------------
