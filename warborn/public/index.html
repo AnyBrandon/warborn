@@ -44,6 +44,31 @@
   .card h1 { font-size: clamp(24px, 7vw, 30px); letter-spacing: 3px; margin-bottom: 4px; color: #7fd1ff; }
   .card h2 { font-size: clamp(15px, 4vw, 18px); margin-bottom: 16px; font-weight: 500; color: #9fb2cc; }
   .card p { color: #9fb2cc; font-size: clamp(13px, 3.6vw, 14px); margin-bottom: 14px; line-height: 1.4; }
+
+  /* ---- Cinematic lobby: 3D diorama behind a glassy UI card ---- */
+  #lobby.lobby-cinematic { background: #0a0f18; }
+  #lobbyCanvas {
+    position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+    /* Fade in once the scene is ready so the UI never blocks on 3D loading. */
+    opacity: 0; transition: opacity 900ms ease; touch-action: none;
+    z-index: 0;
+  }
+  #lobbyCanvas.ready { opacity: 1; }
+  /* Radial vignette keeps the card's text readable over the bright scene. */
+  .lobby-vignette {
+    position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    background: radial-gradient(ellipse at center,
+      rgba(4,7,12,0) 30%, rgba(4,7,12,0.55) 75%, rgba(4,7,12,0.82) 100%);
+  }
+  /* The lobby card floats above the scene, slightly translucent + blurred. */
+  #lobby.lobby-cinematic .card {
+    position: relative; z-index: 2;
+    background: rgba(17, 24, 40, 0.62);
+    border: 1px solid rgba(127, 209, 255, 0.28);
+    box-shadow: 0 24px 70px rgba(0,0,0,.6), 0 0 40px rgba(40,80,130,0.25) inset;
+    backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+  }
+  #lobby.lobby-cinematic .card h2 { color: #cfe0f2; letter-spacing: .5px; }
   input[type=text] {
     width: 100%; padding: 14px 12px; border-radius: 8px; border: 1px solid #33465f; min-height: 48px;
     background: #0d1524; color: #e6edf3; font-size: 16px; letter-spacing: 2px; text-transform: uppercase;
@@ -299,10 +324,13 @@
     </div>
 
     <!-- Lobby -->
-    <div id="lobby" class="center-screen">
+    <div id="lobby" class="center-screen lobby-cinematic">
+      <!-- Cinematic 3D diorama backdrop (purely visual, its own canvas/loop). -->
+      <canvas id="lobbyCanvas"></canvas>
+      <div class="lobby-vignette"></div>
       <div class="card">
         <h1>WARBORN</h1>
-        <h2>Phase 1 — Core Multiplayer</h2>
+        <h2>Steel. Strategy. Silence before the strike.</h2>
         <p>Create a room and share the code, or join an existing room.</p>
         <input id="roomInput" type="text" placeholder="ROOM CODE" maxlength="4" />
         <div class="row">
@@ -664,6 +692,8 @@
     // This tab now owns a live session; enable mid-session reconnect only.
     intentionalSession = true;
     hide("lobby");
+    // Stop the cinematic lobby scene so it never renders during the match.
+    if (typeof Lobby3D !== "undefined") Lobby3D.stop();
     show("hud");
     $("roomtag").textContent = "ROOM " + G.roomCode;
     $("slottag").textContent = "PLAYER " + G.slot;
@@ -2518,12 +2548,221 @@
   $("zoomInBtn").addEventListener("pointerup", () => zoomCamera(0.8));
   $("zoomOutBtn").addEventListener("pointerup", () => zoomCamera(1.25));
 
+  // ===========================================================================
+  // LOBBY CINEMATIC DIORAMA (purely visual)
+  // ---------------------------------------------------------------------------
+  // A small, self-contained 3D scene rendered on its OWN canvas + RAF loop behind
+  // the lobby card. It reuses the shared model cache (_glbCache), cloneModel,
+  // makeSkyTexture and the same lighting/fog style as the battle scene — but is
+  // fully isolated so it never touches game state or the main render loop.
+  // It starts on boot (fading in once models are ready) and STOPS the moment the
+  // player leaves the lobby, so it wastes no GPU during a match.
+  const Lobby3D = (() => {
+    let lscene, lcam, lrenderer, lraf = null, lclock = 0, running = false, built = false;
+    let builtWithModels = false; // true once diorama built with real GLB models
+    let orbitR = 15, orbitH = 7.5, dust = null;
+
+    function build() {
+      const canvas = $("lobbyCanvas");
+      if (!canvas) return;
+      lscene = new THREE.Scene();
+      lscene.background = makeSkyTexture();
+      lscene.fog = new THREE.Fog(0x223047, 26, 60);
+
+      lcam = new THREE.PerspectiveCamera(46, 1, 0.1, 400);
+      // Create the WebGL context ONCE for this canvas; reuse across rebuilds so
+      // we never leak a second GL context on the same element.
+      if (!lrenderer) {
+        lrenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+        // Mobile-friendly pixel ratio cap (lower than battle's 2) — this is the
+        // first screen everyone loads, so keep fill-rate conservative.
+        lrenderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+        lrenderer.shadowMap.enabled = true;
+        lrenderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        lrenderer.outputEncoding = THREE.sRGBEncoding;
+      }
+
+      // Lighting rig mirrors the battle scene for a consistent look.
+      lscene.add(new THREE.AmbientLight(0xb8c6d9, 0.55));
+      lscene.add(new THREE.HemisphereLight(0xbcd0ff, 0x2b3a22, 0.5));
+      const sun = new THREE.DirectionalLight(0xfff2d6, 1.1);
+      sun.position.set(-14, 22, 12);
+      sun.castShadow = true;
+      sun.shadow.mapSize.width = 1024;   // capped (battle uses 2048) for mobile
+      sun.shadow.mapSize.height = 1024;
+      sun.shadow.camera.near = 1; sun.shadow.camera.far = 80;
+      sun.shadow.camera.left = -18; sun.shadow.camera.right = 18;
+      sun.shadow.camera.top = 18; sun.shadow.camera.bottom = -18;
+      sun.shadow.bias = -0.0005;
+      lscene.add(sun);
+      const rim = new THREE.DirectionalLight(0x6f9bff, 0.4);
+      rim.position.set(12, 8, -16);
+      lscene.add(rim);
+
+      // Decorative terrain patch: a low disc of "land" with a subtle mound, so
+      // the tanks sit on ground with real shadows (no heavy baked-map load).
+      const groundMat = new THREE.MeshStandardMaterial({ color: 0x46583a, roughness: 0.95, metalness: 0.02 });
+      const ground = new THREE.Mesh(new THREE.CylinderGeometry(13, 13.5, 1.2, 48), groundMat);
+      ground.position.y = -0.6; ground.receiveShadow = true; ground._lobbyOwned = true;
+      lscene.add(ground);
+      // A couple of gentle hill mounds for silhouette interest.
+      const hillMat = new THREE.MeshStandardMaterial({ color: 0x3c4d33, roughness: 1, metalness: 0 });
+      [[-6, -5, 2.6], [7, -3, 2.0], [2, 6, 1.7]].forEach(([hx, hz, hr]) => {
+        const hill = new THREE.Mesh(new THREE.SphereGeometry(hr, 16, 12), hillMat);
+        hill.position.set(hx, -0.2, hz); hill.scale.y = 0.5;
+        hill.castShadow = true; hill.receiveShadow = true; hill._lobbyOwned = true;
+        lscene.add(hill);
+      });
+
+      // Pose a small mixed platoon using the cached GLB models (fallback: simple
+      // boxes if a model failed to load, so the diorama is never empty).
+      const platoon = [
+        { type: "command", w: 2, h: 2, x: 0,    z: 0,   ry: 0.5 },
+        { type: "heavy",   w: 2, h: 3, x: -4.2, z: 1.4, ry: 0.9 },
+        { type: "medium",  w: 2, h: 2, x: 4.0,  z: 1.0, ry: -0.7 },
+        { type: "light",   w: 1, h: 2, x: -2.0, z: -3.4, ry: 2.4 },
+        { type: "light",   w: 1, h: 2, x: 2.6,  z: -3.0, ry: -2.2 },
+        { type: "plane",   w: 2, h: 2, x: 0.2,  z: 4.6, ry: 0.2 },
+      ];
+      const TILE = 2.0; // world units per footprint tile for the diorama
+      platoon.forEach((u) => {
+        let obj = null;
+        const url = GLB_TANKS[u.type];
+        if (url && _glbCache[url] && typeof instantiateGlb === "function") {
+          obj = instantiateGlb(url, u.w * TILE, u.h * TILE);
+        }
+        if (!obj) { // procedural fallback box
+          const c = new THREE.Color(TANK_COLORS[u.type] || "#888");
+          obj = new THREE.Group();
+          const m = new THREE.Mesh(
+            new THREE.BoxGeometry(u.w * TILE * 0.8, 1.1, u.h * TILE * 0.8),
+            new THREE.MeshStandardMaterial({ color: c, roughness: 0.7, metalness: 0.25 }));
+          m.position.y = 0.55; m.castShadow = true; m._lobbyOwned = true; obj.add(m);
+        }
+        obj.traverse((c) => { if (c.isMesh) c.castShadow = true; });
+        obj.position.set(u.x, 0, u.z);
+        obj.rotation.y = u.ry;
+        lscene.add(obj);
+      });
+
+      // Cheap drifting dust motes: a single Points cloud, small count for mobile.
+      const N = 90;
+      const pos = new Float32Array(N * 3);
+      for (let i = 0; i < N; i++) {
+        pos[i * 3] = (Math.random() - 0.5) * 30;
+        pos[i * 3 + 1] = Math.random() * 12;
+        pos[i * 3 + 2] = (Math.random() - 0.5) * 30;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      const pmat = new THREE.PointsMaterial({ color: 0xbcd0ff, size: 0.14, transparent: true, opacity: 0.35, depthWrite: false });
+      dust = new THREE.Points(geo, pmat);
+      dust._lobbyOwned = true;
+      lscene.add(dust);
+
+      built = true;
+      builtWithModels = !!_modelsReady;
+      resize();
+    }
+
+    // Drop the current scene before rebuilding. We only dispose the primitive
+    // geometries/materials WE created here (tagged _lobbyOwned); GLB clones share
+    // geometry/materials with the battle model cache, so we must NOT dispose
+    // those — just release the scene reference and let GC reclaim the clones.
+    function disposeScene() {
+      if (!lscene) return;
+      lscene.traverse((o) => {
+        if (!o._lobbyOwned) return;
+        if (o.geometry && o.geometry.dispose) o.geometry.dispose();
+        if (o.material) {
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          mats.forEach((m) => m && m.dispose && m.dispose());
+        }
+      });
+      lscene = null; built = false; dust = null;
+    }
+
+    function resize() {
+      const canvas = $("lobbyCanvas");
+      if (!canvas || !lrenderer || !lcam) return;
+      const w = canvas.clientWidth || window.innerWidth;
+      const h = canvas.clientHeight || window.innerHeight;
+      if (w === 0 || h === 0) return;
+      lcam.aspect = w / h; lcam.updateProjectionMatrix();
+      lrenderer.setSize(w, h, false);
+    }
+
+    function loop() {
+      if (!running) return;
+      lraf = requestAnimationFrame(loop);
+      lclock += 0.016;
+      // Slow, calm orbit — not a fast spin. Gentle vertical drift + slight zoom.
+      const a = lclock * 0.12;
+      const r = orbitR + Math.sin(lclock * 0.18) * 1.6;
+      lcam.position.set(Math.cos(a) * r, orbitH + Math.sin(lclock * 0.25) * 1.1, Math.sin(a) * r);
+      lcam.lookAt(0, 1.2, 0);
+      if (dust) {
+        dust.rotation.y += 0.0006;
+        const p = dust.geometry.attributes.position;
+        for (let i = 0; i < p.count; i++) {
+          let y = p.getY(i) + 0.006;
+          if (y > 12) y = 0;
+          p.setY(i, y);
+        }
+        p.needsUpdate = true;
+      }
+      lrenderer.render(lscene, lcam);
+    }
+
+    function start() {
+      // Only run while the lobby is actually visible.
+      if (running) return;
+      const lobby = $("lobby");
+      if (!lobby || lobby.classList.contains("hidden")) return;
+      if (!built) build();
+      if (!built) return;
+      running = true;
+      resize();
+      window.addEventListener("resize", resize);
+      loop();
+      // Fade the canvas in once the first frame(s) have rendered.
+      requestAnimationFrame(() => { const c = $("lobbyCanvas"); if (c) c.classList.add("ready"); });
+    }
+
+    function stop() {
+      running = false;
+      if (lraf) { cancelAnimationFrame(lraf); lraf = null; }
+      window.removeEventListener("resize", resize);
+    }
+
+    // Called once models finish loading: if the diorama was built with fallback
+    // boxes, rebuild it with the real GLB models (only while still in lobby).
+    function rebuildIfPending() {
+      const lobby = $("lobby");
+      if (!lobby || lobby.classList.contains("hidden")) return;
+      if (built && !builtWithModels && _modelsReady) {
+        disposeScene();
+        build();
+      }
+    }
+
+    return { start, stop, rebuildIfPending };
+  })();
+
   // ---- Boot -----------------------------------------------------------------
   initThree();
   preloadSounds();
+  // Show the lobby scene immediately (UI is already usable; scene fades in).
+  Lobby3D.start();
   // Preload GLB models once, then (re)build the scene so real models appear as
   // soon as they're ready. Networking starts immediately in parallel.
-  preloadModels(() => { if (G.view) buildScene(); });
+  preloadModels(() => {
+    if (G.view) buildScene();
+    // If the lobby is still up, rebuild its diorama now that GLB models exist
+    // (so real tanks replace fallback boxes), then ensure it's running.
+    Lobby3D.rebuildIfPending();
+    Lobby3D.start();
+  });
   connect();
   </script>
 </body>
