@@ -153,13 +153,14 @@ function genIsthmus(seed) {
   const g = blank();
   for (let y = 0; y < GRID_H; y++) {
     for (let x = 0; x < GRID_W; x++) {
-      // Two big elliptical lobes (left & right). Strong masks so both reliably
-      // form; the noise only perturbs the coastline, it can't erase a lobe.
-      const left = radial(x, y, 16, 30, 22, 1.0, 1.35);
-      const right = radial(x, y, 54, 30, 22, 1.0, 1.35);
+      // Two big elliptical lobes (left & right). Radii grown modestly for ~25%
+      // more land: radius 22->23.5, sy 1.35->1.42. The noise only perturbs the
+      // coastline, it can't erase a lobe.
+      const left = radial(x, y, 16, 30, 24, 1.0, 1.46);
+      const right = radial(x, y, 54, 30, 24, 1.0, 1.46);
       let mask = Math.max(left, right);
-      // Bridge: a narrow guaranteed chokepoint across the waist. Only the
-      // central rows get a boost, so it reads as an isthmus, not a full band.
+      // Bridge: a narrow guaranteed chokepoint across the waist (UNCHANGED size).
+      // Only the central rows get a boost, so it reads as an isthmus, not a band.
       if (y >= 28 && y <= 31) {
         const bridge = 0.72 - Math.abs(y - 29.5) * 0.06;
         mask = Math.max(mask, bridge);
@@ -172,8 +173,9 @@ function genIsthmus(seed) {
   addHills(g, fractal(mulberry32(seed + 7), 3, 5), 0.66);
   return {
     grid: g,
-    zoneA: { x: 4, y: 14, w: 22, h: 32 },
-    zoneB: { x: 44, y: 14, w: 22, h: 32 },
+    // Zones widened/heightened slightly to capture the larger lobe extent.
+    zoneA: { x: 3, y: 12, w: 24, h: 36 },
+    zoneB: { x: 43, y: 12, w: 24, h: 36 },
   };
 }
 
@@ -184,25 +186,27 @@ function genArchipelago(seed) {
   // MUCH larger islands (bigger radii) pulled CLOSER together (blob centers
   // moved toward the middle) so the map is compact/playable, not empty ocean.
   const blobs = [
-    [18, 14, 18], [19, 44, 17],   // left cluster (Player A)
-    [51, 14, 18], [50, 45, 17],   // right cluster (Player B)
+    [18, 14, 19], [19, 44, 18],   // left cluster (Player A) — radii +~1
+    [51, 14, 19], [50, 45, 18],   // right cluster (Player B)
   ];
   for (let y = 0; y < GRID_H; y++) {
     for (let x = 0; x < GRID_W; x++) {
       let mask = 0;
       for (const [bx, by, br] of blobs) mask = Math.max(mask, radial(x, y, bx, by, br));
-      // Lower threshold + heavier mask weight => more land per island.
-      const v = noise(x / GRID_W, y / GRID_H) * 0.4 + mask * 0.9;
-      if (v > 0.6) g[y][x] = LAND;
+      // Slightly denser islands (more deployable land) without moving the
+      // clusters or growing the neutral gap.
+      const v = noise(x / GRID_W, y / GRID_H) * 0.4 + mask * 0.92;
+      if (v > 0.585) g[y][x] = LAND;
     }
   }
   keepLargestComponents(g, 4); // keep the several distinct islands
   addHills(g, fractal(mulberry32(seed + 7), 3, 6), 0.72);
   return {
     grid: g,
-    // Larger deployable footprints on each side, closer to the (smaller) gap.
-    zoneA: { x: 2, y: 3, w: 30, h: 54 },
-    zoneB: { x: 38, y: 3, w: 30, h: 54 },
+    // Width grown a little (30->32) with a central gap preserved; height near
+    // the grid limit stays ~54.
+    zoneA: { x: 1, y: 3, w: 32, h: 54 },
+    zoneB: { x: 37, y: 3, w: 32, h: 54 },
   };
 }
 
@@ -213,9 +217,11 @@ function genHighland(seed) {
   const cx = 35, cy = 29.5; // center between rows 29 and 30 for clean symmetry
   for (let y = 0; y < GRID_H; y++) {
     for (let x = 0; x < GRID_W; x++) {
-      const mask = radial(x, y, cx, cy, 30, 1.15, 1.0);
-      const v = noise(x / GRID_W, y / GRID_H) * 0.45 + mask * 0.75;
-      if (v > 0.55) g[y][x] = LAND;
+      // Taller basin (sy 1.0->1.06) grown vertically toward the (slightly
+      // slimmer) neutral band, for ~25% more land while keeping the character.
+      const mask = radial(x, y, cx, cy, 30, 1.15, 1.06);
+      const v = noise(x / GRID_W, y / GRID_H) * 0.45 + mask * 0.76;
+      if (v > 0.545) g[y][x] = LAND;
     }
   }
   // Force VERTICAL SYMMETRY so both player zones get identical land. A tile is
@@ -243,11 +249,11 @@ function genHighland(seed) {
   }
   return {
     grid: g,
-    // BALANCED, mirrored player zones (identical width/height, symmetric about
-    // the map's vertical center y=29.5): top y 3-26, bottom y 33-56, both h=24.
-    // Larger than before, leaving a slim neutral band (rows ~27-32).
-    zoneA: { x: 5, y: 3, w: 60, h: 24 },
-    zoneB: { x: 5, y: 33, w: 60, h: 24 },
+    // BALANCED, mirrored player zones grown in HEIGHT (24->26), symmetric about
+    // y=29.5: top y 2-27, bottom y 32-57. Neutral band stays ~rows 28-31,
+    // keeping the ring-of-hills basin character.
+    zoneA: { x: 5, y: 2, w: 60, h: 26 },
+    zoneB: { x: 5, y: 32, w: 60, h: 26 },
   };
 }
 
@@ -259,11 +265,12 @@ function genSquid(seed) {
   const cx = 35, cy = 30;
   for (let y = 0; y < GRID_H; y++) {
     for (let x = 0; x < GRID_W; x++) {
-      // Soft central mask so tentacles can reach outward.
-      const mask = radial(x, y, cx, cy, 34, 1.05, 1.0);
-      // Lower effective threshold near center, stricter at edges => inlets.
-      const v = noise(x / GRID_W, y / GRID_H) * 0.62 + mask * 0.55;
-      if (v > 0.6) g[y][x] = LAND;
+      // Soft central mask so tentacles can reach outward. Grown slightly
+      // vertically (sy 1.0->1.05) for ~25% more deployable land per lobe,
+      // keeping the tentacled/inlet character.
+      const mask = radial(x, y, cx, cy, 34, 1.05, 1.05);
+      const v = noise(x / GRID_W, y / GRID_H) * 0.62 + mask * 0.56;
+      if (v > 0.585) g[y][x] = LAND;
     }
   }
   keepLargestComponents(g, 1);
@@ -298,10 +305,10 @@ function genSquid(seed) {
 
   return {
     grid: g,
-    // North lobe vs south lobe. BIGGER player zones reaching further toward the
-    // center; SMALLER neutral middle (only ~rows 27-32 between the zones).
-    zoneA: { x: 6, y: 2, w: 58, h: 25 },
-    zoneB: { x: 6, y: 32, w: 58, h: 25 },
+    // North lobe vs south lobe. Zones grown in HEIGHT (25->27) reaching a little
+    // further toward the center; the hill waist band (rows 28-31) is unchanged.
+    zoneA: { x: 6, y: 1, w: 58, h: 27 },
+    zoneB: { x: 6, y: 32, w: 58, h: 27 },
   };
 }
 
@@ -372,6 +379,21 @@ if (require.main === module) {
   const arg = process.argv[2];
   if (arg === "--stats") {
     for (const [k, v] of Object.entries(maps)) console.error(k, stats(v));
+  } else if (arg === "--zonestats") {
+    // Deployable LAND (land+hill+forest+mud, i.e. any playable tile) inside each
+    // player's zone rectangle — the true metric for zone deployable area.
+    const zoneLand = (def, z) => {
+      let n = 0;
+      for (let y = z.y; y < z.y + z.h; y++)
+        for (let x = z.x; x < z.x + z.w; x++) {
+          const t = def.grid[y] && def.grid[y][x];
+          if (t === LAND || t === HILL || t === FOREST || t === MUD) n++;
+        }
+      return n;
+    };
+    for (const [k, v] of Object.entries(maps)) {
+      console.error(k, "zoneA=" + zoneLand(v, v.zoneA), "zoneB=" + zoneLand(v, v.zoneB));
+    }
   } else if (arg === "--ascii") {
     // Visual inspection: print each map as ASCII.
     for (const [k, v] of Object.entries(maps)) {
