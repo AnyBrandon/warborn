@@ -94,6 +94,21 @@ function clearTurnTimer(match) {
 }
 
 // Broadcast a single resolved action (fire/reposition/pass) + fresh per-player
+// Produce a per-player copy of an action result with any information that must
+// stay hidden from that player REDACTED at the source (server-authoritative,
+// not just client-side). Currently: a Smoke deployment's exact tile is never
+// sent to the opponent — they only learn that smoke was deployed, not where.
+function sanitizeResultFor(match, playerId, result) {
+  if (!result || result.kind !== "smoke") return result;
+  const me = match.players[playerId];
+  const ownerSlot = result.smokePlaced && result.smokePlaced.slot;
+  if (me && me.slot === ownerSlot) return result; // owner sees full detail
+  // Opponent: strip the tile coordinates, keep only that smoke happened.
+  const clone = Object.assign({}, result);
+  if (clone.smokePlaced) clone.smokePlaced = { slot: ownerSlot };
+  return clone;
+}
+
 // view to both clients. Handles game-over messaging.
 function broadcastActionResult(match, result) {
   for (const playerId of Object.keys(match.players)) {
@@ -101,7 +116,7 @@ function broadcastActionResult(match, result) {
     if (sock) {
       send(sock, {
         type: "action_result",
-        result,
+        result: sanitizeResultFor(match, playerId, result),
         view: gl.buildPlayerView(match, playerId),
       });
     }

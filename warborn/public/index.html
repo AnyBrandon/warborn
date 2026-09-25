@@ -164,9 +164,17 @@
   #intrusionLog { color: #ff6b6b; text-align: left; }
 
   /* ---- Cinematic popups (video + dramatic alerts) ---- */
-  #videoScreen, #ballisticWarn, #repoCine, #defeatCine { background: rgba(2,3,6,0.94); z-index: 70; }
+  #videoScreen, #ballisticWarn, #repoCine, #defeatCine, #smokeWarn { background: rgba(2,3,6,0.94); z-index: 70; }
   .videobox { width: min(90vw, 960px); border: 1px solid #2a3852; border-radius: 8px; overflow: hidden; box-shadow: 0 0 60px rgba(0,0,0,.7); background: #000; }
   #cineVideo { width: 100%; height: auto; display: block; }
+  /* Tactical label shown above a cinematic video (e.g. enemy repositioning). */
+  .cine-label {
+    font-family: 'Consolas', ui-monospace, 'Courier New', monospace;
+    text-align: center; padding: 12px 16px; letter-spacing: 3px; font-weight: 800;
+    font-size: clamp(16px, 4.5vw, 26px); color: #7fd1ff;
+    background: #071019; border-bottom: 1px solid #2f80b5;
+    text-shadow: 0 0 12px rgba(127,209,255,.5);
+  }
 
   .alertbox {
     width: 560px; max-width: 92vw; background: #14060a; border: 2px solid #e11d48; border-radius: 10px;
@@ -182,6 +190,11 @@
   .alertbox.defeat .alert-title { color: #e6edf3; text-shadow: none; }
   .alert-sub { margin-top: 12px; font-size: clamp(13px, 3.6vw, 16px); line-height: 1.5; color: #ffb3bd; }
   .alertbox.defeat .alert-sub { color: #9fb2cc; }
+  /* Smoke-warning variant: cool grey-blue, same alert family. */
+  .alertbox.smoke { border-color: #7f95b0; box-shadow: 0 0 60px rgba(150,170,200,.45); color: #cdd8e6; background: #0b1017; }
+  .alertbox.smoke .alert-glyph { animation: none; color: #cdd8e6; }
+  .alertbox.smoke .alert-title { color: #dbe6f2; text-shadow: 0 0 12px rgba(200,215,235,.5); }
+  .alertbox.smoke .alert-sub { color: #9fb2cc; }
   .alert-klaxon { margin-top: 14px; font-size: 26px; letter-spacing: 8px; color: #ffd23a; animation: blink 0.4s steps(2) infinite; }
 
   .repobox {
@@ -345,6 +358,7 @@
     <!-- Cinematic video popup (reused for ballistic launch, reposition, victory) -->
     <div id="videoScreen" class="center-screen hidden">
       <div class="videobox">
+        <div id="cineLabel" class="cine-label hidden"></div>
         <video id="cineVideo" playsinline muted></video>
       </div>
     </div>
@@ -375,6 +389,16 @@
         <div class="alert-glyph">✖</div>
         <div class="alert-title">FORCES ELIMINATED</div>
         <div class="alert-sub">Your command has fallen. The battle is lost.</div>
+      </div>
+    </div>
+
+    <!-- Enemy smoke deployment warning (opponent, no video, no location leak) -->
+    <div id="smokeWarn" class="center-screen hidden">
+      <div class="alertbox smoke">
+        <div class="alert-glyph">🌫</div>
+        <div class="alert-title">ENEMY DEPLOYING SMOKE COVER</div>
+        <div class="alert-sub">Concealment screen detected on the battlefield.<br/>VISUAL CONTACT COMPROMISED — targeting reliability reduced.</div>
+        <div class="alert-klaxon">⚠ ⚠ ⚠</div>
       </div>
     </div>
 
@@ -1087,14 +1111,17 @@
   // Play a video in a fullscreen popup; auto-closes when the video ends. Calls
   // onDone() after close. Robust to autoplay/load failures (falls back to a
   // short timeout so the game never gets stuck behind a broken video).
-  function playCineVideo(src, onDone) {
-    const screen = $("videoScreen");
+  // Optional `label` shows a tactical caption above the video for its lifetime.
+  function playCineVideo(src, onDone, label) {
     const vid = $("cineVideo");
+    const lbl = $("cineLabel");
+    if (label) { lbl.textContent = label; show("cineLabel"); }
+    else { lbl.textContent = ""; hide("cineLabel"); }
     let finished = false;
     const finish = () => {
       if (finished) return; finished = true;
       vid.pause(); vid.removeAttribute("src"); vid.load();
-      hide("videoScreen");
+      hide("videoScreen"); hide("cineLabel");
       if (onDone) onDone();
     };
     vid.onended = finish;
@@ -1137,12 +1164,14 @@
     resetActionSelection();
 
     const iActed = result.actorSlot === G.slot;
-    // For the TARGET of a Ballistic Missile, the impact visual is DEFERRED (see
-    // the ballistic branch) so it plays after their warning popup closes — the
-    // shot already resolved server-side; only the visual is delayed. Every other
-    // case plays the impact visual immediately here.
-    const deferImpact = result.kind === "fire" && result.weapon === "ballistic" && !iActed;
-    if (!deferImpact) flashImpacts(result);
+    // Some weapons DEFER their impact visual (the shot already resolved
+    // server-side; only the VISUAL is delayed for presentation):
+    //  - Ballistic: target only, after their warning popup (handled below).
+    //  - Missile: BOTH players, by 3s (travel time) — handled below.
+    // Everything else plays its impact immediately here.
+    const deferBallistic = result.kind === "fire" && result.weapon === "ballistic" && !iActed;
+    const deferMissile = result.kind === "fire" && result.weapon === "missile";
+    if (!deferBallistic && !deferMissile) flashImpacts(result);
     if (result.kind === "fire") {
       const impacts = result.impacts || [];
       const hits = impacts.filter((i) => i.hit).length;
@@ -1161,8 +1190,15 @@
         if (iActed) playSound("tankShot");                    // firing player
         else if (hits === 0) playSound("missedTankShot");     // target on a MISS
       } else if (result.weapon === "missile") {
-        if (iActed) playSound("missileLaunch");               // firing player
-        else if (hits > 0) playSound("missileExplosion");     // target when hit
+        // Launch sound fires immediately for the firer; the impact VISUAL and
+        // the target's explosion sound are delayed 3s (travel time) on BOTH
+        // screens. Resolution already happened server-side — visual only.
+        if (iActed) playSound("missileLaunch");
+        const MISSILE_TRAVEL_MS = 3000;
+        setTimeout(() => {
+          flashImpacts(result);
+          if (!iActed && hits > 0) playSound("missileExplosion"); // target, on hit
+        }, MISSILE_TRAVEL_MS);
       }
 
       // BALLISTIC MISSILE cinematics (presentational; does not block resolution).
@@ -1192,10 +1228,16 @@
       // REPOSITION cinematics: actor sees a tactical text popup; opponent sees a
       // short video. Presentational only — reposition logic already resolved.
       if (iActed) { toast("Unit repositioned."); showTimedPopup("repoCine", 3200); }
-      else playCineVideo("assets/videos/reposition_1.mp4");
-    } else if (result.kind === "smoke" && iActed) {
-      toast("Smoke deployed — enemy shots on it will miss (once).");
-      if (result.smokePlaced) fxSmokeRise(result.smokePlaced.x, result.smokePlaced.y); // owner-only effect
+      else playCineVideo("assets/videos/reposition_1.mp4", null, "⚠ HOSTILE MOVEMENT DETECTED ⚠");
+    } else if (result.kind === "smoke") {
+      if (iActed) {
+        toast("Smoke deployed — enemy shots on it will miss (once).");
+        if (result.smokePlaced) fxSmokeRise(result.smokePlaced.x, result.smokePlaced.y); // owner-only effect
+      } else {
+        // Opponent: a GENERAL dramatic warning — no tile/location revealed, so
+        // the smoke's exact position stays hidden (existing visibility rule).
+        showTimedPopup("smokeWarn", 3600);
+      }
     } else if (result.kind === "recon") {
       // Attacker gets the hacking sequence; defender gets the intrusion alert.
       // The attacker also sees a subtle 3D scan sweep over the queried 4x4.

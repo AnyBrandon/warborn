@@ -220,10 +220,18 @@ ensureTurn(w, "a");
 const bZone = w.map.zoneB;
 // aim at an interior enemy-zone tile so the whole cross lands in-zone
 const aim = { x: bZone.x + 5, y: bZone.y + 5 };
+const t0missile = Date.now();
 const mres = gl.submitAction(w, "a", { action: "fire", weapon: "missile", target: aim });
+const missileResolveMs = Date.now() - t0missile;
 ok(mres.ok, "Missile accepted while Heavy alive & uses remain");
 ok(mres.result.impacts.length === 5, "Missile resolved 5 impact tiles");
 ok(w.players["a"].weapons.missileUses === 1, "Missile use count incremented");
+// The 3s impact delay is CLIENT-side only. Server resolution is synchronous:
+// impacts + any sunk are present in the returned result immediately, and the
+// call returns effectively instantly (no server-side travel-time delay).
+ok(missileResolveMs < 100, "Missile resolves immediately server-side (no 3s delay in logic)");
+ok(mres.result.impacts.every((i) => typeof i.hit === "boolean"),
+   "Missile impacts are fully resolved in the returned result (not deferred)");
 
 // No-two-in-a-row: A's very next turn cannot use Missile.
 ensureTurn(w, "a");
