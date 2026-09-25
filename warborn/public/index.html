@@ -1349,8 +1349,8 @@
     } else if (result.kind === "recon") {
       // Attacker gets the hacking sequence; defender gets the intrusion alert.
       // The attacker also sees a subtle 3D scan sweep over the queried 4x4.
-      if (iActed) { if (result.recon.area) fxReconScan(result.recon.area); runHackSequence(result.recon.occupied); }
-      else runIntrusionAlert();
+      if (iActed) { if (result.recon.area) fxReconScan(result.recon.area); playSound("hacking"); runHackSequence(result.recon.occupied); }
+      else { playSound("hacked"); runIntrusionAlert(); }
     }
 
     // Plane-destroyed callout (affects whoever lost their plane).
@@ -1821,6 +1821,8 @@
     tankShot:           "assets/sounds/tankShot.wav",
     missedTankShot:     "assets/sounds/missedTankShot.wav",
     tankDestroyed:      "assets/sounds/tankDestroyed.wav",
+    hacking:            "assets/sounds/hacking.mp3",  // Recon: acting player
+    hacked:             "assets/sounds/hacked.mp3",    // Recon: target player
   };
   const _sounds = {};
   function preloadSounds() {
@@ -2459,6 +2461,11 @@
           t.tiles && t.tiles.some((tl) => tl.x === picked.x && tl.y === picked.y));
         if (!tank) { toast("Tap one of your tanks to move it."); return; }
         if (tank.sunk) { toast("That tank is sunk."); return; }
+        // Per-tank hit lock: a tank that has taken any damage can never move.
+        if (tank.everHit || (tank.hitTiles && tank.hitTiles.length > 0)) {
+          toast("This unit has taken damage and cannot be repositioned.");
+          return;
+        }
         G.repoTankId = tank.tankId;
         G.repoRotation = tank.rotation;
         G.repoDest = null;

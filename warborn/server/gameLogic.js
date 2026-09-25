@@ -110,6 +110,7 @@ function buildRosterInstances() {
         tiles: [], // resolved list of {x,y} occupied tiles
         // Combat state:
         hitTiles: [], // tiles of this tank that have been hit
+        everHit: false, // true once ANY tile is hit — permanently locks Reposition
         sunk: false,
       });
     }
@@ -526,6 +527,12 @@ function validateAction(match, player, action) {
     const tank = player.tanks.find((t) => t.tankId === action.tankId);
     if (!tank) return { ok: false, error: "No such tank" };
     if (tank.sunk) return { ok: false, error: "Cannot move a sunk tank" };
+    // PER-TANK HIT LOCK (authoritative): once this specific tank has taken any
+    // hit (on any of its tiles), it can never be repositioned again — even if
+    // the plane is still alive and other undamaged tanks remain repositionable.
+    if (tank.everHit || (tank.hitTiles && tank.hitTiles.length > 0)) {
+      return { ok: false, error: "This unit has taken damage and cannot be repositioned" };
+    }
 
     const rotation = action.rotation || 0;
     const position = action.position;
@@ -625,6 +632,8 @@ function applyHitToTile(match, target, x, y, result, opts) {
     if (!tank.hitTiles.some((t) => t.x === x && t.y === y)) {
       tank.hitTiles.push({ x, y });
     }
+    // Per-tank hit lock: mark this tank as permanently ineligible for Reposition.
+    tank.everHit = true;
     // Command Tank: mark the perk-ending "first hit" (distinct from sunk).
     if (tank.type === "command" && !target.commandEverHit) {
       target.commandEverHit = true;
@@ -785,7 +794,12 @@ function buildPlayerView(match, playerId) {
     rotation: t.rotation,
     tiles: t.tiles,
     hitTiles: t.hitTiles,
+    everHit: t.everHit,
     sunk: t.sunk,
+    // Per-tank Reposition eligibility: needs the plane alive, tank not sunk,
+    // AND the tank must never have been hit. Lets the client grey out locked
+    // tanks without re-deriving the rule.
+    repositionable: canReposition(me) && !t.sunk && !t.everHit && !(t.hitTiles && t.hitTiles.length > 0),
   }));
 
   // Enemy view: fog-of-war. Only reveal a tank's tiles once it is sunk.

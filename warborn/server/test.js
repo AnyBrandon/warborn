@@ -642,5 +642,55 @@ ok(wv.weapons.ballistic.available === false && /command/i.test(wv.weapons.ballis
   ok(!bad.ok, "surrender rejected when not in battle");
 }
 
+// ==========================================================================
+// PART 5 — Per-tank hit lock: a hit tank can NEVER be repositioned again,
+// even while the Transportation Plane is still alive; undamaged tanks of the
+// same player remain fully repositionable.
+// ==========================================================================
+{
+  const s = freshBattle("highland");
+  const az = s.map.zoneA;
+
+  // Pick a light tank of A and hit exactly one of its tiles (not fully sinking).
+  const target = s.players["a"].tanks.find((t) => t.type === "light" && t.tiles.length > 1);
+  const firstTile = target.tiles[0];
+  ensureTurn(s, "b");
+  gl.submitAction(s, "b", { action: "fire", weapon: "tank_shoot", target: firstTile });
+
+  const tk = s.players["a"].tanks.find((t) => t.tankId === target.tankId);
+  ok(tk.everHit === true, "tank flagged everHit after taking a single hit");
+  ok(tk.sunk === false, "single-tile hit did not fully sink the multi-tile tank");
+  ok(gl.canReposition(s.players["a"]) === true, "plane still alive — player can reposition in general");
+
+  // Attempt to reposition the HIT tank — must be rejected even though plane alive.
+  ensureTurn(s, "a");
+  let hitReject = null;
+  for (let yy = az.y; yy < az.y + az.h && !hitReject; yy++)
+    for (let xx = az.x; xx < az.x + az.w && !hitReject; xx++) {
+      const r = gl.submitAction(s, "a", { action: "reposition", tankId: target.tankId, position: { x: xx, y: yy }, rotation: 0 });
+      hitReject = r; // capture first response (ok or not)
+    }
+  ok(hitReject && !hitReject.ok && /damage/i.test(hitReject.error),
+     "hit tank rejected from reposition while plane alive");
+
+  // An UNDAMAGED tank of the same player CAN still reposition.
+  ensureTurn(s, "a");
+  const clean = s.players["a"].tanks.find((t) => t.type === "light" && !t.everHit && !t.sunk);
+  let cleanMoved = null;
+  for (let yy = az.y; yy < az.y + az.h && !cleanMoved; yy++)
+    for (let xx = az.x; xx < az.x + az.w && !cleanMoved; xx++) {
+      const r = gl.submitAction(s, "a", { action: "reposition", tankId: clean.tankId, position: { x: xx, y: yy }, rotation: 0 });
+      if (r.ok) cleanMoved = { xx, yy };
+    }
+  ok(!!cleanMoved, "undamaged tank still repositionable while a sibling tank is hit");
+
+  // buildPlayerView exposes per-tank repositionable flags correctly.
+  const view = gl.buildPlayerView(s, "a");
+  const hitView = view.myTanks.find((t) => t.tankId === target.tankId);
+  const cleanView = view.myTanks.find((t) => t.tankId === clean.tankId);
+  ok(hitView.repositionable === false, "view: hit tank flagged NOT repositionable");
+  ok(cleanView.repositionable === true, "view: undamaged tank flagged repositionable");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
